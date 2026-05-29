@@ -1,0 +1,17 @@
+# Core LLM + orchestration
+langgraph>=0.2.60
+langgraph-checkpoint-sqlite>=2.0.0
+aiosqlite>=0.20.0
+langchain-core>=0.3.30
+
+# LLM providers (install what you use)
+langchain-openai>=0.2.0       # OpenRouter (OpenAI-compatible) — default provider
+langchain-google-genai>=2.0.0
+langchain-anthropic>=0.3.0
+
+# Telegram
+python-telegram-bot>=21.6
+
+# Config
+python-dotenv>=1.0.1
+pydantic-settings>=2.6.0
