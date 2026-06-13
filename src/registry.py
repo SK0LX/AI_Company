@@ -16,11 +16,18 @@ from datetime import datetime
 
 from sqlmodel import select
 
-from src.agents.prompts import CEO_PROMPT, ROLE_LABELS, SPECIALIST_PROMPTS
+from src.agents.prompts import (
+    CEO_PROMPT,
+    ROLE_LABELS,
+    ROLE_LABELS_RU,
+    SPECIALIST_PROMPTS,
+)
 from src.db.engine import get_session, init_db
 from src.db.models import Agent, AgentObligation, AgentPermission
 
 logger = logging.getLogger(__name__)
+
+CEO_SLUG = "ceo"
 
 # Default permission grants per role for the seed set. Values are scalars or
 # JSON strings (delegate_to is a JSON list / "*").
@@ -66,7 +73,22 @@ class Registry:
         """Create tables, seed defaults on first run, load the cache."""
         init_db()
         self.seed_if_empty()
+        self._ensure_ru_names()
         self.reload()
+
+    def _ensure_ru_names(self) -> None:
+        """One-time normalization: give built-in roles their Russian display
+        names if a row was seeded earlier with the English label."""
+        with get_session() as session:
+            changed = False
+            for slug, ru in ROLE_LABELS_RU.items():
+                agent = session.exec(select(Agent).where(Agent.slug == slug)).first()
+                if agent and agent.name == ROLE_LABELS.get(slug):
+                    agent.name = ru
+                    session.add(agent)
+                    changed = True
+            if changed:
+                session.commit()
 
     def seed_if_empty(self) -> None:
         with get_session() as session:
@@ -76,7 +98,7 @@ class Registry:
             for slug, prompt in roles.items():
                 agent = Agent(
                     slug=slug,
-                    name=ROLE_LABELS.get(slug, slug),
+                    name=ROLE_LABELS_RU.get(slug) or ROLE_LABELS.get(slug, slug),
                     role=slug,
                     system_prompt=prompt,
                     folder_path=f"agents/{slug}",
@@ -133,6 +155,45 @@ class Registry:
                 .where(AgentObligation.key == "primary")
             ).first()
             return row.description if row else ""
+
+    # --- roster accessors (the bot/graph read these instead of prompts.py) ---
+
+    def prompt(self, slug: str) -> str:
+        agent = self._by_slug.get(slug)
+        return agent.system_prompt if agent else ""
+
+    def ceo_prompt(self) -> str:
+        return self.prompt(CEO_SLUG)
+
+    def label(self, slug: str) -> str:
+        agent = self._by_slug.get(slug)
+        return agent.name if agent else slug
+
+    def model_for(self, slug: str) -> str:
+        agent = self._by_slug.get(slug)
+        return (agent.model or "") if agent else ""
+
+    def specialist_slugs(self, *, enabled_only: bool = True) -> list[str]:
+        return [
+            a.slug
+            for a in self.list_agents(enabled_only=enabled_only)
+            if a.slug != CEO_SLUG
+        ]
+
+    def is_specialist(self, slug: str | None) -> bool:
+        if not slug or slug == CEO_SLUG:
+            return False
+        agent = self._by_slug.get(slug)
+        return bool(agent) and agent.enabled
+
+    def roster_block(self) -> str:
+        """Human-readable list of delegatable specialists for the CEO prompt."""
+        lines = [
+            f"- {a.slug} — {a.name}"
+            for a in self.list_agents(enabled_only=True)
+            if a.slug != CEO_SLUG
+        ]
+        return "Specialists you can delegate to (use the exact key on the left):\n" + "\n".join(lines)
 
     def as_dict(self, slug: str) -> dict | None:
         """Full view of an agent for the admin API."""

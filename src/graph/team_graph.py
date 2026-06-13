@@ -27,13 +27,8 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 from pydantic import BaseModel, Field
 
-from src.agents.prompts import (
-    CEO_PROMPT,
-    ROLE_LABELS,
-    ROLE_LABELS_RU,
-    SPECIALIST_PROMPTS,
-)
 from src import quota
+from src.registry import registry
 from src.agents.tools import (
     current_project_files,
     sanitize_project,
@@ -92,24 +87,11 @@ except Exception:  # noqa: BLE001
 if not _RETRYABLE:
     _RETRYABLE = (Exception,)
 
-RoleName = Literal[
-    "business_analyst",
-    "system_analyst",
-    "developer",
-    "frontend",
-    "tester",
-    "designer",
-    "backend_reviewer",
-    "frontend_reviewer",
-    "reviewer",
-]
-
 ROUTING_INSTRUCTIONS = f"""You operate in an orchestration loop and must return a \
 structured decision at every step.
 
-Specialists you can delegate to (use these exact keys): business_analyst, \
-system_analyst, developer, frontend, tester, designer, backend_reviewer, \
-frontend_reviewer, reviewer.
+The exact list of specialists you can delegate to is provided separately below \
+(it is configured at runtime). Use the exact key shown for each.
 
 Rules:
 - PLAN FIRST. For any non-trivial request (anything that will involve building \
@@ -212,8 +194,12 @@ class CeoDecision(BaseModel):
             "a clarifying question before starting, or 'final' to answer now."
         )
     )
-    role: Optional[RoleName] = Field(
-        default=None, description="Specialist to delegate to. Required when action='delegate'."
+    role: Optional[str] = Field(
+        default=None,
+        description=(
+            "Specialist key to delegate to (must be one of the exact keys listed "
+            "in the roster). Required when action='delegate'."
+        ),
     )
     question: Optional[str] = Field(
         default=None,
@@ -341,14 +327,20 @@ def _retry(runnable: Runnable) -> Runnable:
     )
 
 
-@lru_cache(maxsize=1)
+@lru_cache(maxsize=12)
+def _model_by_name(model_name: str) -> BaseChatModel:
+    return _make_model(model_name)
+
+
 def _ceo_model() -> BaseChatModel:
-    return _make_model(settings.ceo_model_resolved)
+    return _model_by_name(registry.model_for("ceo") or settings.ceo_model_resolved)
 
 
-@lru_cache(maxsize=1)
-def _specialist_model() -> BaseChatModel:
-    return _make_model(settings.agent_model_resolved)
+def _specialist_model(slug: Optional[str] = None) -> BaseChatModel:
+    """Model for a specialist. Honors the agent's per-agent `model` from the
+    registry; falls back to the global default."""
+    name = (registry.model_for(slug) if slug else "") or settings.agent_model_resolved
+    return _model_by_name(name)
 
 
 # Roles that work with real files and therefore run as tool-enabled agents.
@@ -376,12 +368,25 @@ _SHELL_ROLES = (
 )
 
 
-@lru_cache(maxsize=len(_FILE_TOOL_ROLES))
+def _perm(role: str, key: str) -> bool:
+    return registry.permissions(role).get(key) == "true"
+
+
+def _uses_tools(role: str) -> bool:
+    """Whether a specialist runs as a tool-enabled ReAct agent: a built-in tool
+    role, or a custom agent granted file/shell permissions in the panel."""
+    return (
+        role in _FILE_TOOL_ROLES
+        or _perm(role, "can_edit_files")
+        or _perm(role, "can_run_shell")
+    )
+
+
 def _tool_agent(role: str):
-    """A ReAct agent that can work with real project files. Builders
-    (developer/frontend) create files; code reviewers read and patch them; the
-    tech-lead reviewer can also move/delete them to fix the layout. The developer
-    (and the backend reviewer) may additionally run Python to verify code."""
+    """Build a ReAct agent for a tool-using specialist. NOT cached, so prompt and
+    permission edits made in the admin panel take effect on the next run. Tools
+    follow built-in role behavior, plus shell is gated by the `can_run_shell`
+    permission."""
     from langgraph.prebuilt import create_react_agent
 
     from src.agents.tools import (
@@ -394,6 +399,9 @@ def _tool_agent(role: str):
         write_file,
     )
 
+    base_prompt = registry.prompt(role)
+    model = _specialist_model(role)
+    can_shell = settings.enable_shell_execution and _perm(role, "can_run_shell")
     shell_note = (
         "\n\nYou can run REAL commands with run_shell in the project folder "
         "(e.g. `npm install`, `npm test`, `pytest`, `pip install -r "
@@ -401,13 +409,13 @@ def _tool_agent(role: str):
         "user's approval; if they decline you get '[skipped by user]'. Actually "
         "run installs/builds/tests to VERIFY your work instead of assuming it "
         "passes; read the output and fix real failures."
-        if (role in _SHELL_ROLES and settings.enable_shell_execution)
+        if can_shell
         else ""
     )
 
     if role == "tester":
         tools: list = [list_files, read_file, write_file]
-        if settings.enable_shell_execution:
+        if can_shell:
             tools.append(run_shell)
         extra = (
             "\n\nThe project is ALREADY on disk in this folder. Use list_files and "
@@ -416,12 +424,10 @@ def _tool_agent(role: str):
             "real results — pass/fail with the relevant output."
             + shell_note
         )
-        return create_react_agent(
-            _specialist_model(), tools=tools, prompt=SPECIALIST_PROMPTS[role] + extra
-        )
+        return create_react_agent(model, tools=tools, prompt=base_prompt + extra)
 
     if role in _CODE_REVIEW_ROLES:
-        tools: list = [list_files, read_file, write_file]
+        tools = [list_files, read_file, write_file]
         extra = (
             "\n\nYou are reviewing code that is ALREADY saved in this project's "
             "folder. First call list_files, then read_file on the files in your "
@@ -438,15 +444,13 @@ def _tool_agent(role: str):
                 " You can call run_python to reproduce a bug or check a fix before "
                 "saving it."
             )
-        if settings.enable_shell_execution:
+        if can_shell:
             tools.append(run_shell)
             extra += shell_note
-        return create_react_agent(
-            _specialist_model(), tools=tools, prompt=SPECIALIST_PROMPTS[role] + extra
-        )
+        return create_react_agent(model, tools=tools, prompt=base_prompt + extra)
 
     if role == "reviewer":
-        tools: list = [list_files, read_file, write_file, move_file, delete_file]
+        tools = [list_files, read_file, write_file, move_file, delete_file]
         extra = (
             "\n\nYou are reviewing an EXISTING project that is ALREADY on disk in "
             "this project's folder. First call list_files to see everything that "
@@ -460,10 +464,9 @@ def _tool_agent(role: str):
             "delegate. Finish by calling list_files again and reporting the final "
             "structure, what you fixed, and anything still missing."
         )
-        return create_react_agent(
-            _specialist_model(), tools=tools, prompt=SPECIALIST_PROMPTS[role] + extra
-        )
+        return create_react_agent(model, tools=tools, prompt=base_prompt + extra)
 
+    # Default: builders (developer/frontend) and custom agents with file perms.
     tools = [write_file, read_file, list_files]
     extra = (
         "\n\nYou have a real filesystem workspace and you are ALREADY inside this "
@@ -488,14 +491,10 @@ def _tool_agent(role: str):
             " You can also call run_python to execute and verify code before "
             "saving it. Prefer to test non-trivial code at least once."
         )
-    if role in _SHELL_ROLES and settings.enable_shell_execution:
+    if can_shell:
         tools.append(run_shell)
         extra += shell_note
-    return create_react_agent(
-        _specialist_model(),
-        tools=tools,
-        prompt=SPECIALIST_PROMPTS[role] + extra,
-    )
+    return create_react_agent(model, tools=tools, prompt=base_prompt + extra)
 
 
 # --- helpers ----------------------------------------------------------------
@@ -536,7 +535,7 @@ async def _synthesize(messages: list[BaseMessage], findings: list[str]) -> str:
         )
     )
     resp = await _retry(_ceo_model()).ainvoke(
-        [SystemMessage(content=CEO_PROMPT), prompt]
+        [SystemMessage(content=registry.ceo_prompt()), prompt]
     )
     return _content_to_text(resp.content) or "..."
 
@@ -656,7 +655,11 @@ async def _ceo_node(state: TeamState, config: Optional[RunnableConfig] = None) -
     # starts executing instead of proposing the plan again (the routing's
     # "plan first" rule otherwise tempts it back into another plan).
     approved = bool(state.get("plan_approved"))
-    system_text = f"{CEO_PROMPT}\n\n{ROUTING_INSTRUCTIONS}"
+    # CEO prompt + routing + the LIVE roster of specialists (from the registry,
+    # so agents added/edited in the admin panel are immediately delegatable).
+    system_text = (
+        f"{registry.ceo_prompt()}\n\n{ROUTING_INSTRUCTIONS}\n\n{registry.roster_block()}"
+    )
     if approved:
         system_text += (
             "\n\nIMPORTANT: The user has ALREADY APPROVED your plan. Do NOT use "
@@ -737,7 +740,7 @@ async def _ceo_node(state: TeamState, config: Optional[RunnableConfig] = None) -
             answer = await _synthesize(state["messages"], findings)
             return {"messages": [AIMessage(content=answer)], "next_role": None}
 
-    if decision.action == "delegate" and decision.role in SPECIALIST_PROMPTS:
+    if decision.action == "delegate" and registry.is_specialist(decision.role):
         # Lock in ONE project folder for the whole request. Prefer an already
         # chosen folder, then the CEO's slug, then a thread-derived fallback so
         # every specialist on this request shares the same directory.
@@ -794,14 +797,14 @@ async def _specialist_node(state: TeamState) -> dict:
         f"User's overall request:\n{_last_user_text(state['messages'])}\n\n"
         f"Your specific task from the CEO:\n{instruction}"
     )
-    if structure and role in _FILE_TOOL_ROLES:
+    if structure and _uses_tools(role):
         task += (
             "\n\nAGREED PROJECT STRUCTURE — place files EXACTLY at these paths "
             "(relative to the project root); do not invent your own layout:\n"
             f"{structure}"
         )
     result = await arun_specialist(role, task, project=project)
-    label = ROLE_LABELS.get(role, role)
+    label = registry.label(role)
     return {
         "findings": state.get("findings", []) + [f"## {label}\n{result}"],
         "steps": state.get("steps", 0) + 1,
@@ -921,7 +924,7 @@ async def aquick_reply(text: str, thread_id: str) -> str:
 
     system = SystemMessage(
         content=(
-            f"{CEO_PROMPT}\n\nSITUATION: your team is RIGHT NOW working on a task "
+            f"{registry.ceo_prompt()}\n\nSITUATION: your team is RIGHT NOW working on a task "
             "in the background. The user just sent a message mid-work. You CANNOT "
             "start a new task or interrupt the current one — the team finishes one "
             "task at a time. Reply briefly (1-3 sentences) in the user's language. "
@@ -1012,7 +1015,7 @@ async def arun_team(
                     final_answer = _content_to_text(messages[-1].content) or final_answer
                 if node == "ceo" and delta.get("next_role"):
                     role = delta["next_role"]
-                    label = (ROLE_LABELS_RU if translate else ROLE_LABELS).get(role, role)
+                    label = registry.label(role)
                     # `user_note` is already in the user's language; prefer it.
                     note = (delta.get("user_note") or "").strip()
                     if not note:
@@ -1031,9 +1034,7 @@ async def arun_team(
                         result = findings[-1]
                         if "\n" in result:
                             result = result.split("\n", 1)[1]  # drop the "## label"
-                        label = (ROLE_LABELS_RU if translate else ROLE_LABELS).get(
-                            role, role or ""
-                        )
+                        label = registry.label(role) if role else ""
                         _set_status(thread_id, f"{label}: результат получен")
                         if translate:
                             result = await atranslate_ru(result)
@@ -1054,7 +1055,7 @@ async def arun_specialist(role: str, text: str, project: str = "") -> str:
     ``project`` points the file tools at one shared ``<workspace>/<project>``
     folder so every specialist on the same request writes into ONE directory.
     """
-    if role in _FILE_TOOL_ROLES:
+    if _uses_tools(role):
         set_project_subdir(project)
         result = await _tool_agent(role).ainvoke(
             {"messages": [HumanMessage(content=text)]},
@@ -1072,8 +1073,8 @@ async def arun_specialist(role: str, text: str, project: str = "") -> str:
         reply += f"\n\n[Files actually on disk in the project folder now]\n{listing}"
         return reply
 
-    prompt = SPECIALIST_PROMPTS[role]
-    response = await _retry(_specialist_model()).ainvoke(
+    prompt = registry.prompt(role)
+    response = await _retry(_specialist_model(role)).ainvoke(
         [SystemMessage(content=prompt), HumanMessage(content=text)]
     )
     return _content_to_text(response.content) or "..."

@@ -4,6 +4,7 @@ import logging
 from telegram import Update
 
 from src.bot.telegram_bot import build_application
+from src.registry import registry
 
 
 def main() -> None:
@@ -13,6 +14,10 @@ def main() -> None:
     )
     # Quiet down the very chatty HTTP client used by python-telegram-bot.
     logging.getLogger("httpx").setLevel(logging.WARNING)
+
+    # Load agents from the DB (seed on first run). The team now reads roles,
+    # prompts and permissions from here, so the admin panel affects the bot.
+    registry.setup()
 
     app = build_application()
     logging.getLogger(__name__).info("Bot starting (polling)...")

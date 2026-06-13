@@ -32,8 +32,8 @@ from telegram.ext import (
 )
 
 from src import approvals, quota
-from src.agents.prompts import ROLE_LABELS, ROLE_LABELS_RU, SPECIALIST_PROMPTS
 from src.config import settings
+from src.registry import registry
 from src.graph.team_graph import (
     aquick_reply,
     arun_specialist,
@@ -105,7 +105,7 @@ def _extract_role(text: str) -> tuple[str | None, str]:
     prefix, rest = text.split(":", 1)
     key = prefix.strip().lower()
     role = ROLE_ALIASES.get(key, key)
-    if role in SPECIALIST_PROMPTS and rest.strip():
+    if registry.is_specialist(role) and rest.strip():
         return role, rest.strip()
     return None, text
 
@@ -181,7 +181,11 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def roles_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    lines = ["*Team*"] + [f"• {label}" for label in ROLE_LABELS.values()]
+    registry.reload()
+    lines = ["*Команда*"] + [
+        f"• {a.name} (`{a.slug}`)" + ("" if a.enabled else " — выкл.")
+        for a in registry.list_agents()
+    ]
     await _reply(update, "\n".join(lines))
 
 
@@ -199,15 +203,16 @@ async def team_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def ask_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    registry.reload()
     if not context.args:
-        roles = ", ".join(SPECIALIST_PROMPTS.keys())
+        roles = ", ".join(registry.specialist_slugs())
         await _reply(update, f"Usage: /ask <role> <question>\nRoles: {roles}")
         return
 
     raw_role = context.args[0].lower()
     role = ROLE_ALIASES.get(raw_role, raw_role)
-    if role not in SPECIALIST_PROMPTS:
-        roles = ", ".join(SPECIALIST_PROMPTS.keys())
+    if not registry.is_specialist(role):
+        roles = ", ".join(registry.specialist_slugs())
         await _reply(update, f"Unknown role '{raw_role}'.\nAvailable: {roles}")
         return
 
@@ -262,6 +267,8 @@ async def _run_team(
     ack: str | None = "🚀 Принял задачу, анализирую…",
     plan_approved: bool = False,
 ) -> None:
+    # Pick up any agent edits made in the admin panel since the last task.
+    registry.reload()
     thread_id = _thread_id(update, context)
     # One task at a time per chat (they share a thread_id / checkpointer). While a
     # run is in progress, the bot stays responsive (concurrent_updates) and other
@@ -485,6 +492,7 @@ async def on_plan_callback(
 
 
 async def _run_specialist(update: Update, role: str, question: str) -> None:
+    registry.reload()
     await update.effective_chat.send_action(ChatAction.TYPING)
     try:
         answer = await arun_specialist(role, question)
@@ -494,7 +502,7 @@ async def _run_specialist(update: Update, role: str, question: str) -> None:
         logger.exception("specialist run failed")
         await _reply(update, "⚠️ Something went wrong while reaching the specialist.")
         return
-    label = (ROLE_LABELS_RU if settings.translate_chatter else ROLE_LABELS)[role]
+    label = registry.label(role)
     await _reply(update, f"*{label}*\n\n{answer}")
 
 
