@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import datetime
 
 from sqlmodel import select
 
@@ -120,6 +121,121 @@ class Registry:
                 select(AgentPermission).where(AgentPermission.agent_id == agent.id)
             ).all()
             return {r.key: r.value for r in rows}
+
+    def obligation(self, slug: str) -> str:
+        agent = self._by_slug.get(slug)
+        if not agent:
+            return ""
+        with get_session() as session:
+            row = session.exec(
+                select(AgentObligation)
+                .where(AgentObligation.agent_id == agent.id)
+                .where(AgentObligation.key == "primary")
+            ).first()
+            return row.description if row else ""
+
+    def as_dict(self, slug: str) -> dict | None:
+        """Full view of an agent for the admin API."""
+        agent = self._by_slug.get(slug)
+        if not agent:
+            return None
+        return {
+            "slug": agent.slug,
+            "name": agent.name,
+            "role": agent.role,
+            "system_prompt": agent.system_prompt,
+            "model": agent.model,
+            "telegram_username": agent.telegram_username,
+            "enabled": agent.enabled,
+            "permissions": self.permissions(slug),
+            "obligation": self.obligation(slug),
+        }
+
+    # --- write API (used by the admin panel) --------------------------------
+
+    def _set_permissions(self, session, agent_id: int, perms: dict[str, str]) -> None:
+        existing = session.exec(
+            select(AgentPermission).where(AgentPermission.agent_id == agent_id)
+        ).all()
+        for row in existing:
+            session.delete(row)
+        for key, value in (perms or {}).items():
+            session.add(AgentPermission(agent_id=agent_id, key=key, value=str(value)))
+
+    def _set_obligation(self, session, agent_id: int, text: str) -> None:
+        row = session.exec(
+            select(AgentObligation)
+            .where(AgentObligation.agent_id == agent_id)
+            .where(AgentObligation.key == "primary")
+        ).first()
+        if row:
+            row.description = text or ""
+            session.add(row)
+        else:
+            session.add(
+                AgentObligation(agent_id=agent_id, key="primary", description=text or "")
+            )
+
+    def create_agent(self, data: dict) -> Agent:
+        with get_session() as session:
+            if session.exec(select(Agent).where(Agent.slug == data["slug"])).first():
+                raise ValueError(f"agent '{data['slug']}' already exists")
+            agent = Agent(
+                slug=data["slug"],
+                name=data.get("name") or data["slug"],
+                role=data.get("role") or data["slug"],
+                system_prompt=data.get("system_prompt", ""),
+                model=data.get("model", ""),
+                telegram_token=data.get("telegram_token", ""),
+                telegram_username=data.get("telegram_username", ""),
+                folder_path=data.get("folder_path") or f"agents/{data['slug']}",
+                enabled=data.get("enabled", True),
+            )
+            session.add(agent)
+            session.commit()
+            session.refresh(agent)
+            self._set_permissions(session, agent.id, data.get("permissions", {}))
+            self._set_obligation(session, agent.id, data.get("obligation", ""))
+            session.commit()
+        self.reload()
+        return self._by_slug[data["slug"]]
+
+    def update_agent(self, slug: str, data: dict) -> Agent:
+        with get_session() as session:
+            agent = session.exec(select(Agent).where(Agent.slug == slug)).first()
+            if not agent:
+                raise KeyError(slug)
+            for field in ("name", "role", "system_prompt", "model",
+                          "telegram_token", "telegram_username", "enabled"):
+                if field in data and data[field] is not None:
+                    setattr(agent, field, data[field])
+            agent.updated_at = datetime.utcnow()
+            session.add(agent)
+            session.commit()
+            if "permissions" in data:
+                self._set_permissions(session, agent.id, data["permissions"])
+            if "obligation" in data:
+                self._set_obligation(session, agent.id, data["obligation"])
+            session.commit()
+        self.reload()
+        return self._by_slug[slug]
+
+    def delete_agent(self, slug: str) -> None:
+        with get_session() as session:
+            agent = session.exec(select(Agent).where(Agent.slug == slug)).first()
+            if not agent:
+                raise KeyError(slug)
+            for row in session.exec(
+                select(AgentPermission).where(AgentPermission.agent_id == agent.id)
+            ).all():
+                session.delete(row)
+            for row in session.exec(
+                select(AgentObligation).where(AgentObligation.agent_id == agent.id)
+            ).all():
+                session.delete(row)
+            session.delete(agent)
+            session.commit()
+        self.reload()
 
 
 # Process-wide singleton.

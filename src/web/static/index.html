@@ -1,0 +1,214 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AI IT Company — Агенты</title>
+  <style>
+    :root { --bg:#0f1115; --panel:#181b22; --line:#2a2f3a; --text:#e6e8ec;
+            --muted:#9aa3b2; --accent:#4f8cff; --danger:#ff5c5c; --ok:#3ecf8e; }
+    * { box-sizing: border-box; }
+    body { margin:0; font:14px/1.5 -apple-system,Segoe UI,Roboto,sans-serif;
+           background:var(--bg); color:var(--text); }
+    header { padding:18px 24px; border-bottom:1px solid var(--line);
+             display:flex; align-items:center; justify-content:space-between; }
+    h1 { font-size:18px; margin:0; }
+    .muted { color:var(--muted); }
+    main { padding:20px 24px; max-width:1100px; margin:0 auto; }
+    button { font:inherit; cursor:pointer; border:1px solid var(--line);
+             background:var(--panel); color:var(--text); padding:7px 12px;
+             border-radius:8px; }
+    button.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
+    button.danger { color:var(--danger); }
+    table { width:100%; border-collapse:collapse; margin-top:8px; }
+    th,td { text-align:left; padding:10px 12px; border-bottom:1px solid var(--line);
+            vertical-align:top; }
+    th { color:var(--muted); font-weight:600; font-size:12px; text-transform:uppercase; }
+    .pill { display:inline-block; padding:1px 8px; border-radius:999px; font-size:12px;
+            border:1px solid var(--line); margin:2px 4px 2px 0; color:var(--muted); }
+    .badge-on { color:var(--ok); } .badge-off { color:var(--muted); }
+    .row-actions button { padding:5px 9px; margin-left:6px; }
+    /* modal */
+    .overlay { position:fixed; inset:0; background:rgba(0,0,0,.55); display:none;
+               align-items:flex-start; justify-content:center; overflow:auto; padding:40px 16px; }
+    .overlay.open { display:flex; }
+    .modal { background:var(--panel); border:1px solid var(--line); border-radius:14px;
+             width:680px; max-width:100%; padding:22px; }
+    .field { margin-bottom:14px; }
+    label { display:block; color:var(--muted); margin-bottom:5px; font-size:13px; }
+    input[type=text], textarea, select { width:100%; background:var(--bg); color:var(--text);
+            border:1px solid var(--line); border-radius:8px; padding:9px 11px; font:inherit; }
+    textarea { resize:vertical; min-height:90px; }
+    .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
+    .perms { display:flex; flex-wrap:wrap; gap:14px; }
+    .perms label { display:flex; align-items:center; gap:7px; color:var(--text); }
+    .modal-actions { display:flex; justify-content:space-between; margin-top:18px; }
+    .err { color:var(--danger); min-height:18px; }
+  </style>
+</head>
+<body>
+  <header>
+    <div><h1>🏢 AI IT Company — управление агентами</h1>
+      <span class="muted" id="count"></span></div>
+    <button class="primary" onclick="openForm()">+ Добавить агента</button>
+  </header>
+  <main>
+    <table>
+      <thead><tr>
+        <th>slug</th><th>Имя</th><th>Роль</th><th>Модель</th>
+        <th>Права</th><th>Статус</th><th></th>
+      </tr></thead>
+      <tbody id="rows"></tbody>
+    </table>
+  </main>
+
+  <div class="overlay" id="overlay">
+    <div class="modal">
+      <h2 id="formTitle" style="margin-top:0">Новый агент</h2>
+      <div class="err" id="formErr"></div>
+      <div class="grid2">
+        <div class="field"><label>slug (уникальный ключ)</label>
+          <input type="text" id="f_slug" placeholder="например, devops"></div>
+        <div class="field"><label>Имя</label>
+          <input type="text" id="f_name" placeholder="DevOps-инженер"></div>
+      </div>
+      <div class="grid2">
+        <div class="field"><label>Роль (role)</label>
+          <input type="text" id="f_role" placeholder="devops"></div>
+        <div class="field"><label>Модель (пусто = дефолт провайдера)</label>
+          <input type="text" id="f_model" placeholder=""></div>
+      </div>
+      <div class="field"><label>Системный промпт</label>
+        <textarea id="f_prompt" placeholder="You are a senior ..."></textarea></div>
+      <div class="field"><label>Обязанности (одной строкой)</label>
+        <input type="text" id="f_obligation" placeholder="За что отвечает"></div>
+      <div class="field"><label>Права</label>
+        <div class="perms">
+          <label><input type="checkbox" id="p_can_edit_files"> can_edit_files</label>
+          <label><input type="checkbox" id="p_can_run_shell"> can_run_shell</label>
+          <label><input type="checkbox" id="p_can_edit_others_code"> can_edit_others_code</label>
+          <label><input type="checkbox" id="p_can_modify_agents"> can_modify_agents</label>
+        </div></div>
+      <div class="grid2">
+        <div class="field"><label>delegate_to (через запятую или *)</label>
+          <input type="text" id="f_delegate" placeholder="* или developer,frontend"></div>
+        <div class="field"><label>Telegram username (опц.)</label>
+          <input type="text" id="f_tg_user" placeholder="@my_bot"></div>
+      </div>
+      <div class="field"><label>Telegram token (опц., хранится в БД)</label>
+        <input type="text" id="f_tg_token" placeholder=""></div>
+      <div class="field"><label style="display:flex;align-items:center;gap:8px;color:var(--text)">
+        <input type="checkbox" id="f_enabled" checked> включён</label></div>
+      <div class="modal-actions">
+        <button class="danger" id="deleteBtn" style="display:none" onclick="onDelete()">Удалить</button>
+        <div>
+          <button onclick="closeForm()">Отмена</button>
+          <button class="primary" onclick="onSave()">Сохранить</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+<script>
+const API = '/api/agents';
+let editingSlug = null;
+
+const $ = (id) => document.getElementById(id);
+const esc = (s) => (s||'').replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+
+async function load() {
+  const agents = await (await fetch(API)).json();
+  $('count').textContent = `· ${agents.length} агентов`;
+  $('rows').innerHTML = agents.map(a => {
+    const perms = Object.keys(a.permissions || {});
+    const pills = perms.length ? perms.map(p => `<span class="pill">${esc(p)}</span>`).join('') : '<span class="muted">—</span>';
+    const status = a.enabled ? '<span class="badge-on">● включён</span>' : '<span class="badge-off">○ выключен</span>';
+    return `<tr>
+      <td><code>${esc(a.slug)}</code></td>
+      <td>${esc(a.name)}</td>
+      <td class="muted">${esc(a.role)}</td>
+      <td class="muted">${esc(a.model) || '<span class="muted">дефолт</span>'}</td>
+      <td>${pills}</td>
+      <td>${status}</td>
+      <td class="row-actions" style="white-space:nowrap">
+        <button onclick="openForm('${esc(a.slug)}')">✎</button>
+        <button class="danger" onclick="quickDelete('${esc(a.slug)}')">🗑</button>
+      </td></tr>`;
+  }).join('');
+}
+
+function setPerms(perms) {
+  perms = perms || {};
+  $('p_can_edit_files').checked = perms.can_edit_files === 'true';
+  $('p_can_run_shell').checked = perms.can_run_shell === 'true';
+  $('p_can_edit_others_code').checked = perms.can_edit_others_code === 'true';
+  $('p_can_modify_agents').checked = perms.can_modify_agents === 'true';
+  $('f_delegate').value = (perms.delegate_to || '').replace(/^"|"$/g, '');
+}
+function collectPerms() {
+  const p = {};
+  if ($('p_can_edit_files').checked) p.can_edit_files = 'true';
+  if ($('p_can_run_shell').checked) p.can_run_shell = 'true';
+  if ($('p_can_edit_others_code').checked) p.can_edit_others_code = 'true';
+  if ($('p_can_modify_agents').checked) p.can_modify_agents = 'true';
+  const d = $('f_delegate').value.trim();
+  if (d) p.delegate_to = d;
+  return p;
+}
+
+async function openForm(slug) {
+  $('formErr').textContent = '';
+  editingSlug = slug || null;
+  $('formTitle').textContent = slug ? `Агент: ${slug}` : 'Новый агент';
+  $('deleteBtn').style.display = slug ? 'inline-block' : 'none';
+  $('f_slug').disabled = !!slug;
+  if (slug) {
+    const a = await (await fetch(`${API}/${slug}`)).json();
+    $('f_slug').value = a.slug; $('f_name').value = a.name; $('f_role').value = a.role;
+    $('f_model').value = a.model || ''; $('f_prompt').value = a.system_prompt || '';
+    $('f_obligation').value = a.obligation || ''; $('f_tg_user').value = a.telegram_username || '';
+    $('f_tg_token').value = ''; $('f_enabled').checked = !!a.enabled;
+    setPerms(a.permissions);
+  } else {
+    ['f_slug','f_name','f_role','f_model','f_prompt','f_obligation','f_delegate','f_tg_user','f_tg_token']
+      .forEach(id => $(id).value = '');
+    $('f_enabled').checked = true; setPerms({});
+  }
+  $('overlay').classList.add('open');
+}
+function closeForm() { $('overlay').classList.remove('open'); }
+
+async function onSave() {
+  const body = {
+    slug: $('f_slug').value.trim(), name: $('f_name').value.trim(),
+    role: $('f_role').value.trim(), model: $('f_model').value.trim(),
+    system_prompt: $('f_prompt').value, obligation: $('f_obligation').value.trim(),
+    telegram_username: $('f_tg_user').value.trim(), enabled: $('f_enabled').checked,
+    permissions: collectPerms(),
+  };
+  const token = $('f_tg_token').value.trim();
+  if (token) body.telegram_token = token;
+  let res;
+  if (editingSlug) {
+    res = await fetch(`${API}/${editingSlug}`, {method:'PATCH', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
+  } else {
+    res = await fetch(API, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
+  }
+  if (!res.ok) { const e = await res.json().catch(()=>({})); $('formErr').textContent = e.detail || 'Ошибка сохранения'; return; }
+  closeForm(); load();
+}
+
+async function onDelete() {
+  if (!editingSlug || !confirm(`Удалить агента «${editingSlug}»?`)) return;
+  await fetch(`${API}/${editingSlug}`, {method:'DELETE'});
+  closeForm(); load();
+}
+async function quickDelete(slug) {
+  if (!confirm(`Удалить агента «${slug}»?`)) return;
+  await fetch(`${API}/${slug}`, {method:'DELETE'}); load();
+}
+
+load();
+</script>
+</body>
+</html>

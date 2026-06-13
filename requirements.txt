@@ -18,3 +18,7 @@ pydantic-settings>=2.6.0
 
 # Data layer (agents/tasks/skills registry — v2)
 sqlmodel>=0.0.21
+
+# Admin panel (v2): REST API + static page
+fastapi>=0.110.0
+uvicorn[standard]>=0.27.0
