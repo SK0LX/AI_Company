@@ -1,9 +1,11 @@
-"""Entry point: start the Telegram bot for the AI IT company."""
+"""Entry point: start the Telegram bots for the AI IT company.
+
+Runs the main team/orchestration bot plus a personal bot for every agent that
+has a Telegram token configured in the admin panel (see TelegramManager).
+"""
 import logging
 
-from telegram import Update
-
-from src.bot.telegram_bot import build_application
+from src.bot.manager import TelegramManager
 from src.registry import registry
 
 
@@ -15,16 +17,12 @@ def main() -> None:
     # Quiet down the very chatty HTTP client used by python-telegram-bot.
     logging.getLogger("httpx").setLevel(logging.WARNING)
 
-    # Load agents from the DB (seed on first run). The team now reads roles,
-    # prompts and permissions from here, so the admin panel affects the bot.
+    # Load agents from the DB (seed on first run). The team reads roles, prompts
+    # and permissions from here, so the admin panel affects the bots.
     registry.setup()
 
-    app = build_application()
-    logging.getLogger(__name__).info("Bot starting (polling)...")
-    # Receive ALL update types — crucially callback_query, so the plan
-    # approve/change/cancel BUTTONS work. (Limiting to ["message"] silently
-    # dropped button presses.)
-    app.run_polling(allowed_updates=Update.ALL_TYPES)
+    logging.getLogger(__name__).info("Starting bots (team + per-agent)…")
+    TelegramManager().run()
 
 
 if __name__ == "__main__":

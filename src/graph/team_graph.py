@@ -1078,3 +1078,22 @@ async def arun_specialist(role: str, text: str, project: str = "") -> str:
         [SystemMessage(content=prompt), HumanMessage(content=text)]
     )
     return _content_to_text(response.content) or "..."
+
+
+async def aagent_reply(
+    slug: str, text: str, history: Optional[list[tuple[str, str]]] = None
+) -> str:
+    """A conversational reply from one agent in its OWN Telegram bot (a personal
+    DM). Uses the agent's prompt + recent history; no orchestration, no file/shell
+    tools — it's a chat with that specialist. Output is in the user's language."""
+    messages: list[BaseMessage] = [SystemMessage(content=registry.prompt(slug))]
+    for who, content in history or []:
+        messages.append(
+            HumanMessage(content=content) if who == "user" else AIMessage(content=content)
+        )
+    messages.append(HumanMessage(content=text))
+    resp = await _retry(_specialist_model(slug)).ainvoke(messages)
+    reply = _content_to_text(resp.content) or "..."
+    if settings.translate_chatter:
+        reply = await aensure_russian(reply)
+    return reply
