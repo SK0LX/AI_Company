@@ -94,6 +94,11 @@ class Settings(BaseSettings):
     free_daily_limit: int = 50
     free_daily_warn_at: int = 10
 
+    # Secret used to encrypt per-agent Telegram tokens at rest. Leave empty to
+    # auto-generate a stable key in data/secret.key (gitignored). Any string
+    # works (it is normalized to a valid key).
+    app_secret: str = ""
+
     @property
     def agent_model_resolved(self) -> str:
         return self.agent_model or DEFAULT_MODELS[self.llm_provider]

@@ -22,6 +22,7 @@ from src.agents.prompts import (
     ROLE_LABELS_RU,
     SPECIALIST_PROMPTS,
 )
+from src.crypto import decrypt, encrypt
 from src.db.engine import get_session, init_db
 from src.db.models import Agent, AgentObligation, AgentPermission
 
@@ -173,6 +174,11 @@ class Registry:
         agent = self._by_slug.get(slug)
         return (agent.model or "") if agent else ""
 
+    def token_for(self, slug: str) -> str:
+        """Decrypted Telegram token for an agent (for internal use only)."""
+        agent = self._by_slug.get(slug)
+        return decrypt(agent.telegram_token) if agent and agent.telegram_token else ""
+
     def specialist_slugs(self, *, enabled_only: bool = True) -> list[str]:
         return [
             a.slug
@@ -207,6 +213,7 @@ class Registry:
             "system_prompt": agent.system_prompt,
             "model": agent.model,
             "telegram_username": agent.telegram_username,
+            "has_token": bool(agent.telegram_token),  # never expose the token itself
             "enabled": agent.enabled,
             "permissions": self.permissions(slug),
             "obligation": self.obligation(slug),
@@ -247,7 +254,7 @@ class Registry:
                 role=data.get("role") or data["slug"],
                 system_prompt=data.get("system_prompt", ""),
                 model=data.get("model", ""),
-                telegram_token=data.get("telegram_token", ""),
+                telegram_token=encrypt(data.get("telegram_token", "")),
                 telegram_username=data.get("telegram_username", ""),
                 folder_path=data.get("folder_path") or f"agents/{data['slug']}",
                 enabled=data.get("enabled", True),
@@ -267,9 +274,12 @@ class Registry:
             if not agent:
                 raise KeyError(slug)
             for field in ("name", "role", "system_prompt", "model",
-                          "telegram_token", "telegram_username", "enabled"):
+                          "telegram_username", "enabled"):
                 if field in data and data[field] is not None:
                     setattr(agent, field, data[field])
+            # Token is encrypted at rest; only overwrite when a new one is sent.
+            if data.get("telegram_token"):
+                agent.telegram_token = encrypt(data["telegram_token"])
             agent.updated_at = datetime.utcnow()
             session.add(agent)
             session.commit()

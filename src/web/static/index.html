@@ -167,7 +167,11 @@ async function openForm(slug) {
     $('f_slug').value = a.slug; $('f_name').value = a.name; $('f_role').value = a.role;
     $('f_model').value = a.model || ''; $('f_prompt').value = a.system_prompt || '';
     $('f_obligation').value = a.obligation || ''; $('f_tg_user').value = a.telegram_username || '';
-    $('f_tg_token').value = ''; $('f_enabled').checked = !!a.enabled;
+    $('f_tg_token').value = '';
+    $('f_tg_token').placeholder = a.has_token
+      ? 'токен задан — оставьте пустым, чтобы не менять'
+      : 'вставьте токен от @BotFather';
+    $('f_enabled').checked = !!a.enabled;
     setPerms(a.permissions);
   } else {
     ['f_slug','f_name','f_role','f_model','f_prompt','f_obligation','f_delegate','f_tg_user','f_tg_token']

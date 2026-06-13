@@ -28,16 +28,23 @@ from src.registry import registry
 logger = logging.getLogger(__name__)
 
 _HISTORY_TURNS = 8  # how many (user+agent) messages to keep per personal chat
+_RECONCILE_EVERY = 15  # seconds between checks for newly added/removed agent bots
 
 
 class TelegramManager:
-    """Builds and runs the team bot + every agent's personal bot together."""
+    """Builds and runs the team bot + every agent's personal bot together.
+
+    A background loop reconciles the running agent bots with the registry every
+    few seconds, so adding/removing a token in the admin panel starts/stops that
+    agent's bot WITHOUT restarting the process."""
 
     def __init__(self) -> None:
         # (slug, chat_id) -> recent conversation as (who, text) pairs.
         self._history: dict[tuple[str, int], deque] = defaultdict(
             lambda: deque(maxlen=_HISTORY_TURNS * 2)
         )
+        # slug -> (decrypted_token, Application) for currently-running agent bots.
+        self._agent_apps: dict[str, tuple[str, Application]] = {}
 
     # --- per-agent personal bot --------------------------------------------
 
@@ -85,35 +92,68 @@ class TelegramManager:
 
     # --- lifecycle ----------------------------------------------------------
 
+    @staticmethod
+    async def _start_app(label: str, app: Application) -> bool:
+        try:
+            await app.initialize()
+            await app.start()
+            await app.updater.start_polling(
+                allowed_updates=Update.ALL_TYPES, drop_pending_updates=True
+            )
+            logger.info("bot online: %s", label)
+            return True
+        except Exception:  # noqa: BLE001 - one bad token must not kill the rest
+            logger.exception("failed to start bot '%s' (bad token?)", label)
+            try:
+                await app.shutdown()
+            except Exception:  # noqa: BLE001
+                pass
+            return False
+
+    @staticmethod
+    async def _stop_app(label: str, app: Application) -> None:
+        try:
+            if app.updater:
+                await app.updater.stop()
+            await app.stop()
+            await app.shutdown()
+            logger.info("bot stopped: %s", label)
+        except Exception:  # noqa: BLE001
+            logger.exception("error stopping bot '%s'", label)
+
+    async def _reconcile_agents(self) -> None:
+        """Start bots for newly-added tokens, stop bots for removed/changed ones."""
+        registry.reload()
+        desired: dict[str, str] = {}
+        for agent in registry.list_agents(enabled_only=True):
+            token = registry.token_for(agent.slug)
+            if token:
+                desired[agent.slug] = token
+
+        # Stop bots that are gone, disabled, or whose token changed.
+        for slug in list(self._agent_apps):
+            token, app = self._agent_apps[slug]
+            if desired.get(slug) != token:
+                await self._stop_app(slug, app)
+                del self._agent_apps[slug]
+
+        # Start bots for new/changed tokens.
+        for slug, token in desired.items():
+            if slug not in self._agent_apps:
+                app = self._build_agent_app(slug, registry.label(slug), token)
+                if await self._start_app(slug, app):
+                    self._agent_apps[slug] = (token, app)
+
     async def _run_async(self) -> None:
         registry.reload()
-        apps: list[tuple[str, Application]] = [("команда", build_application())]
-        for agent in registry.list_agents(enabled_only=True):
-            if agent.telegram_token:
-                apps.append(
-                    (
-                        agent.slug,
-                        self._build_agent_app(agent.slug, agent.name, agent.telegram_token),
-                    )
-                )
-
-        started: list[tuple[str, Application]] = []
-        for label, app in apps:
-            try:
-                await app.initialize()
-                await app.start()
-                await app.updater.start_polling(
-                    allowed_updates=Update.ALL_TYPES, drop_pending_updates=True
-                )
-                started.append((label, app))
-                logger.info("bot online: %s", label)
-            except Exception:  # noqa: BLE001 - one bad token must not kill the rest
-                logger.exception("failed to start bot '%s' (bad token?)", label)
-
-        if not started:
-            logger.error("no bots started — check tokens")
+        team_app = build_application()
+        if not await self._start_app("команда", team_app):
+            logger.error("team bot failed to start — check TELEGRAM_BOT_TOKEN")
             return
-        logger.info("%d bot(s) running. Ctrl+C to stop.", len(started))
+        await self._reconcile_agents()
+        logger.info(
+            "Running: team + %d agent bot(s). Ctrl+C to stop.", len(self._agent_apps)
+        )
 
         stop = asyncio.Event()
         loop = asyncio.get_running_loop()
@@ -122,17 +162,27 @@ class TelegramManager:
                 loop.add_signal_handler(sig, stop.set)
             except NotImplementedError:  # e.g. on Windows
                 pass
-        await stop.wait()
 
-        logger.info("shutting down %d bot(s)…", len(started))
-        for label, app in reversed(started):
-            try:
-                if app.updater:
-                    await app.updater.stop()
-                await app.stop()
-                await app.shutdown()
-            except Exception:  # noqa: BLE001
-                logger.exception("error stopping bot '%s'", label)
+        # Background reconcile so panel token changes take effect without restart.
+        async def _reconcile_loop() -> None:
+            while not stop.is_set():
+                try:
+                    await asyncio.wait_for(stop.wait(), timeout=_RECONCILE_EVERY)
+                except asyncio.TimeoutError:
+                    try:
+                        await self._reconcile_agents()
+                    except Exception:  # noqa: BLE001
+                        logger.exception("reconcile failed")
+
+        reconcile_task = asyncio.create_task(_reconcile_loop())
+        await stop.wait()
+        reconcile_task.cancel()
+
+        logger.info("shutting down…")
+        await self._stop_app("команда", team_app)
+        for slug, (_token, app) in list(self._agent_apps.items()):
+            await self._stop_app(slug, app)
+        self._agent_apps.clear()
 
     def run(self) -> None:
         asyncio.run(self._run_async())
