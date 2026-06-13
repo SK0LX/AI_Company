@@ -15,3 +15,6 @@ python-telegram-bot>=21.6
 # Config
 python-dotenv>=1.0.1
 pydantic-settings>=2.6.0
+
+# Data layer (agents/tasks/skills registry — v2)
+sqlmodel>=0.0.21
