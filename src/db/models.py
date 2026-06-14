@@ -141,3 +141,34 @@ class AuditLog(SQLModel, table=True):
     action: str = ""
     target: str = ""
     details_json: str = "{}"
+
+
+# --- stage 5: skills + adoption ---------------------------------------------
+
+class Skill(SQLModel, table=True):
+    """A reusable capability owned by one agent, discovered from its folder
+    (``agents/<slug>/skills/<name>/``). ``manifest_json`` is the parsed skill.yaml;
+    ``path`` is the skill directory. Public skills can be adopted by other agents."""
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    name: str = Field(index=True)  # skill key, unique per owner
+    owner_agent_id: Optional[int] = Field(default=None, index=True, foreign_key="agent.id")
+    version: str = "0.1.0"  # semver
+    description: str = ""
+    manifest_json: str = "{}"
+    path: str = ""  # filesystem path to the skill directory
+    is_public: bool = False
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class AgentSkill(SQLModel, table=True):
+    """Which skills an agent has. The owner gets a row automatically; other agents
+    get one when they ADOPT a public skill (``adopted_from`` = the source agent)."""
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    agent_id: int = Field(index=True, foreign_key="agent.id")
+    skill_id: int = Field(index=True, foreign_key="skill.id")
+    adopted_from: Optional[int] = Field(default=None, foreign_key="agent.id")  # null = owner
+    enabled: bool = True
+    created_at: datetime = Field(default_factory=datetime.utcnow)

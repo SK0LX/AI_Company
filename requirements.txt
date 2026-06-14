@@ -25,3 +25,6 @@ uvicorn[standard]>=0.27.0
 
 # Secrets at rest (encrypt per-agent Telegram tokens)
 cryptography>=42.0.0
+
+# Agent folder / skill manifests (manifest.yaml, skill.yaml — v2 stage 5)
+pyyaml>=6.0

@@ -19,3 +19,8 @@ venv/
 *.sqlite
 *.sqlite3
 data/
+
+# Agent folders: manifest.yaml + prompt.md are generated from the DB on boot
+# (the registry is the source of truth). The skills/ subtree IS tracked.
+agents/*/manifest.yaml
+agents/*/prompt.md
