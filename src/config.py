@@ -94,6 +94,13 @@ class Settings(BaseSettings):
     free_daily_limit: int = 50
     free_daily_warn_at: int = 10
 
+    # Delegation-with-consent (v2 stage 4): before a specialist runs, ask it (an
+    # extra LLM call) whether it accepts the hand-off; on decline the CEO re-routes.
+    # OFF by default because it spends one more model call per delegation, which
+    # matters on the OpenRouter free daily cap. Task/event recording and the help
+    # flow run regardless of this flag (they cost no LLM).
+    enable_negotiation: bool = False
+
     # Admin panel + bot host (single process). Bind to localhost by default —
     # the panel has no auth yet, so do not expose it on a public interface.
     admin_host: str = "127.0.0.1"

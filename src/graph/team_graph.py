@@ -27,7 +27,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 from pydantic import BaseModel, Field
 
-from src import quota
+from src import collab, quota
 from src.registry import registry
 from src.agents.tools import (
     current_project_files,
@@ -268,7 +268,60 @@ class TeamState(TypedDict):
     plan_approved: Optional[bool]  # user approved the plan -> execute, don't re-plan
     project_dir: Optional[str]  # one folder slug shared by the whole request
     structure: Optional[str]  # agreed project file tree shared by the whole request
+    task_id: Optional[int]  # collab Task tracking this request (stage 4)
     steps: int
+
+
+# --- stage 4: consent + help deciders ---------------------------------------
+
+class ConsentDecision(BaseModel):
+    """A specialist's accept/decline answer to a delegation (consent)."""
+
+    accept: bool = Field(description="True to take on the task, False to decline.")
+    reason: str = Field(default="", description="One short sentence explaining why.")
+
+
+async def _consent_decider(to_agent: str, task_text: str, reason: str) -> tuple[bool, str]:
+    """Ask agent ``to_agent`` (its own LLM persona) whether it accepts the task.
+
+    Used only when ``settings.enable_negotiation`` is on. Defaults to accept on
+    any model error so a hiccup never strands a task."""
+    model = _retry(_specialist_model(to_agent).with_structured_output(ConsentDecision))
+    system = SystemMessage(
+        content=(
+            f"{registry.prompt(to_agent)}\n\nA teammate wants to delegate the task "
+            "below to you. Decide whether it fits YOUR role and you can take it on. "
+            "Accept unless it is clearly outside your role or critical information "
+            "is missing. Answer with accept (bool) and a one-sentence reason."
+        )
+    )
+    human = HumanMessage(content=f"Task:\n{task_text}\n\nReason given: {reason or '(none)'}")
+    try:
+        decision: ConsentDecision = await model.ainvoke([system, human])
+        return bool(decision.accept), (decision.reason or "").strip()[:200]
+    except Exception:  # noqa: BLE001
+        logger.warning("consent decision failed for %s; auto-accepting", to_agent, exc_info=True)
+        return True, "auto-accepted (decision failed)"
+
+
+async def _pick_helper(requester: str, summary: str, candidates: list[str]) -> Optional[str]:
+    """Choose a helper for a stuck task. Heuristic (no LLM call, so no quota cost):
+    the first enabled candidate that isn't the requester."""
+    for slug in candidates:
+        if slug != requester and registry.is_specialist(slug):
+            return slug
+    return None
+
+
+def _mark_task_done(state: TeamState) -> None:
+    """Close out the collab task tracking this request (best-effort)."""
+    task_id = state.get("task_id")
+    if not task_id:
+        return
+    try:
+        collab.set_task_status(task_id, "done", actor="ceo")
+    except Exception:  # noqa: BLE001 - tracking must never break a run
+        logger.exception("failed to mark task %s done", task_id)
 
 
 # --- models -----------------------------------------------------------------
@@ -753,6 +806,15 @@ async def _ceo_node(state: TeamState, config: Optional[RunnableConfig] = None) -
                 project_dir = sanitize_project(f"project-{thread_id}" if thread_id else "")
         # Lock in the agreed file tree once, then reuse it for every builder.
         structure = state.get("structure") or (decision.structure or "").strip()
+        # Track this request as a collab Task (created lazily on the first
+        # delegation, so plan/clarify/small-talk turns make no task). Cheap, no LLM.
+        task_id = state.get("task_id")
+        if task_id is None:
+            try:
+                title = (_last_user_text(state["messages"]) or "task").strip()[:120]
+                task_id = collab.create_task(title, created_by="ceo", owner="ceo")
+            except Exception:  # noqa: BLE001 - tracking must never break a run
+                logger.exception("failed to create collab task")
         return {
             "next_role": decision.role,
             "instruction": decision.instruction or "",
@@ -760,6 +822,7 @@ async def _ceo_node(state: TeamState, config: Optional[RunnableConfig] = None) -
             "user_note": decision.user_note or "",
             "project_dir": project_dir,
             "structure": structure,
+            "task_id": task_id,
         }
 
     if decision.action == "propose_plan":
@@ -786,6 +849,7 @@ async def _ceo_node(state: TeamState, config: Optional[RunnableConfig] = None) -
 
     answer = decision.final_answer or await _synthesize(state["messages"], findings)
     await _update_wiki_card(state.get("project_dir"), state["messages"], findings, answer)
+    _mark_task_done(state)
     return {"messages": [AIMessage(content=answer)], "next_role": None}
 
 
@@ -794,6 +858,7 @@ async def _specialist_node(state: TeamState) -> dict:
     instruction = state.get("instruction") or ""
     project = state.get("project_dir") or ""
     structure = (state.get("structure") or "").strip()
+    task_id = state.get("task_id")
     task = (
         f"User's overall request:\n{_last_user_text(state['messages'])}\n\n"
         f"Your specific task from the CEO:\n{instruction}"
@@ -804,10 +869,57 @@ async def _specialist_node(state: TeamState) -> dict:
             "(relative to the project root); do not invent your own layout:\n"
             f"{structure}"
         )
-    result = await arun_specialist(role, task, project=project)
     label = registry.label(role)
+
+    # Delegation hand-off (stage 4). With negotiation on, the specialist consents
+    # first and a decline is surfaced so the CEO re-routes; otherwise record the
+    # auto-accepted hand-off for the task timeline. Both paths are best-effort.
+    if task_id is not None:
+        if settings.enable_negotiation:
+            accepted, why = await collab.negotiate_delegation(
+                task_id=task_id, from_agent="ceo", to_agent=role,
+                task_text=task, reason=instruction, decider=_consent_decider,
+            )
+            if not accepted:
+                note = f"[{label} declined the task] {why}".strip()
+                return {
+                    "findings": state.get("findings", []) + [f"## {label}\n{note}"],
+                    "steps": state.get("steps", 0) + 1,
+                    "next_role": None,
+                    "last_role": role,
+                }
+        else:
+            try:
+                deleg_id = collab.open_delegation(task_id, "ceo", role, reason=instruction)
+                collab.close_delegation(deleg_id, "accepted", actor=role, reason="auto-accepted")
+            except Exception:  # noqa: BLE001
+                logger.exception("failed to record delegation")
+
+    result = await arun_specialist(role, task, project=project)
+
+    # Record the outcome; if a builder saved nothing, open a help request and
+    # suggest a helper so the CEO can route the fix through the normal loop.
+    extra_finding = ""
+    if task_id is not None:
+        try:
+            collab.record_event(task_id, role, "result", chars=len(result))
+            if _uses_tools(role) and "no files were actually saved" in result:
+                candidates = [s for s in registry.specialist_slugs() if _uses_tools(s)]
+                helper = await collab.request_help(
+                    task_id=task_id, requester=role,
+                    summary=f"{role} produced no files for: {instruction[:120]}",
+                    candidates=candidates, picker=_pick_helper,
+                )
+                if helper:
+                    extra_finding = (
+                        f"\n\n[help] {label} saved no files; consider delegating to "
+                        f"{registry.label(helper)} ({helper}) to help."
+                    )
+        except Exception:  # noqa: BLE001
+            logger.exception("failed to record result / open help")
+
     return {
-        "findings": state.get("findings", []) + [f"## {label}\n{result}"],
+        "findings": state.get("findings", []) + [f"## {label}\n{result}{extra_finding}"],
         "steps": state.get("steps", 0) + 1,
         "next_role": None,
         "last_role": role,
@@ -818,6 +930,7 @@ async def _finalize_node(state: TeamState) -> dict:
     findings = state.get("findings", [])
     answer = await _synthesize(state["messages"], findings)
     await _update_wiki_card(state.get("project_dir"), state["messages"], findings, answer)
+    _mark_task_done(state)
     return {"messages": [AIMessage(content=answer)], "next_role": None}
 
 
@@ -984,6 +1097,7 @@ async def arun_team(
         "awaiting_input": False,  # reset each run
         "awaiting_kind": None,  # reset each run
         "plan_approved": plan_approved,  # set when resuming after plan approval
+        "task_id": None,  # collab task created on the first delegation (stage 4)
         "steps": 0,
     }
     config = {"configurable": {"thread_id": thread_id}}
