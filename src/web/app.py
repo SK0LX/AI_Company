@@ -35,10 +35,13 @@ manager = TelegramManager()
 async def _lifespan(app: FastAPI):
     # Create tables, seed the default roles on first run, load the cache.
     registry.setup()
-    # Materialize each agent's folder (agents/<slug>/) so skills can live there.
+    # Materialize each agent's folder (agents/<slug>/) so skills can live there,
+    # then discover + register the skills found in those folders.
     from src.agent_fs import scaffold_all
+    from src.skills import skill_loader
 
     scaffold_all()
+    skill_loader.discover()
     await manager.start()
     try:
         yield

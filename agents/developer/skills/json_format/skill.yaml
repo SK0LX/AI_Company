@@ -1,0 +1,7 @@
+name: json_format
+version: 0.1.0
+description: Validate and pretty-print a JSON string.
+is_public: true
+params:
+  text: The JSON string to validate and format.
+  indent: Number of spaces to indent (default 2).
