@@ -14,7 +14,7 @@ import os
 from contextlib import asynccontextmanager
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -225,6 +225,25 @@ def interaction_graph() -> dict:
     from src import collab
 
     return collab.interaction_graph()
+
+
+@app.websocket("/ws/events")
+async def ws_events(ws: WebSocket) -> None:
+    """Stream task events to the admin board as they happen."""
+    from src.events import hub
+
+    await ws.accept()
+    queue = hub.subscribe()
+    try:
+        while True:
+            event = await queue.get()
+            await ws.send_json(event)
+    except WebSocketDisconnect:
+        pass
+    except Exception:  # noqa: BLE001 - never let one socket crash the server
+        pass
+    finally:
+        hub.unsubscribe(queue)
 
 
 # --- static page ------------------------------------------------------------

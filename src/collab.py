@@ -78,7 +78,8 @@ def create_task(
 
 
 def record_event(task_id: int, actor: Optional[str], type: str, **payload: object) -> None:
-    """Append an entry to a task's timeline. ``actor`` is an agent slug or None."""
+    """Append an entry to a task's timeline. ``actor`` is an agent slug or None.
+    Also pushes the event to the live hub (best-effort) for the admin board."""
     with get_session() as session:
         session.add(
             TaskEvent(
@@ -89,6 +90,13 @@ def record_event(task_id: int, actor: Optional[str], type: str, **payload: objec
             )
         )
         session.commit()
+    try:
+        from src.events import hub
+
+        hub.publish({"event": "task_event", "task_id": task_id, "type": type,
+                     "actor": actor, "payload": payload})
+    except Exception:  # noqa: BLE001 - the live push must never break recording
+        logger.exception("failed to publish live event")
 
 
 def set_task_status(task_id: int, status: str, *, actor: Optional[str] = None) -> None:
