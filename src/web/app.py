@@ -1,13 +1,17 @@
-"""Admin panel backend (v2, stage 2).
+"""Admin panel backend + bot host (v2, unified process).
 
 A small FastAPI app that exposes CRUD over the agent registry and serves a
-single static HTML page. Runs separately from the polling bot for now (both share
-``data/app.sqlite``). Bind to 127.0.0.1 only — no auth yet (added before the
+single static HTML page. It also OWNS the Telegram bots: on startup it brings up
+the team bot plus every agent's personal bot inside this same event loop (see
+``TelegramManager``), and shuts them down on exit. One process, one DB
+(``data/app.sqlite``). Bind to 127.0.0.1 only — no auth yet (added before the
 panel is ever exposed).
 """
 from __future__ import annotations
 
+import logging
 import os
+from contextlib import asynccontextmanager
 from typing import Optional
 
 from fastapi import FastAPI, HTTPException
@@ -15,17 +19,30 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from src.bot.manager import TelegramManager
 from src.registry import registry
 
-app = FastAPI(title="AI IT Company — Admin")
+logger = logging.getLogger(__name__)
 
 _STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 
+# The bots run inside this app's event loop. The admin write endpoints below ask
+# it to reconcile immediately so a token change starts/stops a bot at once.
+manager = TelegramManager()
 
-@app.on_event("startup")
-def _startup() -> None:
+
+@asynccontextmanager
+async def _lifespan(app: FastAPI):
     # Create tables, seed the default roles on first run, load the cache.
     registry.setup()
+    await manager.start()
+    try:
+        yield
+    finally:
+        await manager.stop()
+
+
+app = FastAPI(title="AI IT Company — Admin", lifespan=_lifespan)
 
 
 # --- schemas ----------------------------------------------------------------
@@ -59,31 +76,34 @@ def get_agent(slug: str) -> dict:
 
 
 @app.post("/api/agents", status_code=201)
-def create_agent(payload: AgentIn) -> dict:
+async def create_agent(payload: AgentIn) -> dict:
     if not payload.slug:
         raise HTTPException(422, "slug is required")
     try:
         agent = registry.create_agent(payload.model_dump(exclude_none=True))
     except ValueError as exc:
         raise HTTPException(409, str(exc))
+    await manager.reconcile_now()  # start its personal bot at once if it has a token
     return registry.as_dict(agent.slug)
 
 
 @app.patch("/api/agents/{slug}")
-def update_agent(slug: str, payload: AgentIn) -> dict:
+async def update_agent(slug: str, payload: AgentIn) -> dict:
     try:
         registry.update_agent(slug, payload.model_dump(exclude_none=True))
     except KeyError:
         raise HTTPException(404, f"agent '{slug}' not found")
+    await manager.reconcile_now()  # apply token/enabled changes to its bot at once
     return registry.as_dict(slug)
 
 
 @app.delete("/api/agents/{slug}", status_code=204)
-def delete_agent(slug: str) -> None:
+async def delete_agent(slug: str) -> None:
     try:
         registry.delete_agent(slug)
     except KeyError:
         raise HTTPException(404, f"agent '{slug}' not found")
+    await manager.reconcile_now()  # stop its personal bot at once
 
 
 # --- static page ------------------------------------------------------------

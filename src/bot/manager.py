@@ -1,13 +1,15 @@
-"""Multi-bot manager (v2 stage 3).
+"""Multi-bot manager (v2 stage 3 → unified process).
 
 Runs the main "team" bot (orchestration, unchanged) plus ONE personal bot per
 agent that has a Telegram token in the registry. A personal bot is a direct
 conversation with that single agent (its persona + short history), with no team
 orchestration and no file/shell tools — see :func:`aagent_reply`.
 
-Polling mode (no public HTTPS needed). Per-agent bots are loaded at startup;
-adding a token in the admin panel takes effect after a restart (live hot-add and
-webhook mode come when the bot + admin share one process / move to a server).
+Polling mode (no public HTTPS needed). The manager exposes :meth:`start` /
+:meth:`stop` so the bots can run *inside* the admin's FastAPI event loop (single
+process). A background loop reconciles the running bots with the registry, and
+the admin can call :meth:`reconcile_now` for an instant hot-add/-remove when an
+agent's token changes. :meth:`run` keeps the standalone (bot-only) mode working.
 """
 from __future__ import annotations
 
@@ -45,6 +47,10 @@ class TelegramManager:
         )
         # slug -> (decrypted_token, Application) for currently-running agent bots.
         self._agent_apps: dict[str, tuple[str, Application]] = {}
+        # Filled in by start(); used to drive the background reconcile + shutdown.
+        self._team_app: Application | None = None
+        self._reconcile_task: asyncio.Task | None = None
+        self._stop: asyncio.Event | None = None
 
     # --- per-agent personal bot --------------------------------------------
 
@@ -144,45 +150,74 @@ class TelegramManager:
                 if await self._start_app(slug, app):
                     self._agent_apps[slug] = (token, app)
 
-    async def _run_async(self) -> None:
+    async def reconcile_now(self) -> None:
+        """Reconcile the running bots with the registry right now.
+
+        Called by the admin panel after an agent is created/updated/deleted so a
+        token change takes effect immediately instead of on the next tick."""
+        try:
+            await self._reconcile_agents()
+        except Exception:  # noqa: BLE001
+            logger.exception("reconcile failed")
+
+    async def _reconcile_loop(self) -> None:
+        """Background reconcile so panel token changes take effect without restart."""
+        assert self._stop is not None
+        while not self._stop.is_set():
+            try:
+                await asyncio.wait_for(self._stop.wait(), timeout=_RECONCILE_EVERY)
+            except asyncio.TimeoutError:
+                await self.reconcile_now()
+
+    async def start(self) -> None:
+        """Start the team bot + agent bots inside the CURRENT event loop.
+
+        Safe to run alongside an existing asyncio server (e.g. uvicorn). Does not
+        install signal handlers or block — use :meth:`stop` to shut down."""
         registry.reload()
-        team_app = build_application()
-        if not await self._start_app("команда", team_app):
+        self._team_app = build_application()
+        if not await self._start_app("команда", self._team_app):
             logger.error("team bot failed to start — check TELEGRAM_BOT_TOKEN")
+            self._team_app = None
             return
         await self._reconcile_agents()
-        logger.info(
-            "Running: team + %d agent bot(s). Ctrl+C to stop.", len(self._agent_apps)
-        )
+        self._stop = asyncio.Event()
+        self._reconcile_task = asyncio.create_task(self._reconcile_loop())
+        logger.info("Running: team + %d agent bot(s).", len(self._agent_apps))
 
-        stop = asyncio.Event()
-        loop = asyncio.get_running_loop()
-        for sig in (signal.SIGINT, signal.SIGTERM):
-            try:
-                loop.add_signal_handler(sig, stop.set)
-            except NotImplementedError:  # e.g. on Windows
-                pass
-
-        # Background reconcile so panel token changes take effect without restart.
-        async def _reconcile_loop() -> None:
-            while not stop.is_set():
-                try:
-                    await asyncio.wait_for(stop.wait(), timeout=_RECONCILE_EVERY)
-                except asyncio.TimeoutError:
-                    try:
-                        await self._reconcile_agents()
-                    except Exception:  # noqa: BLE001
-                        logger.exception("reconcile failed")
-
-        reconcile_task = asyncio.create_task(_reconcile_loop())
-        await stop.wait()
-        reconcile_task.cancel()
-
-        logger.info("shutting down…")
-        await self._stop_app("команда", team_app)
+    async def stop(self) -> None:
+        """Stop the reconcile loop and every running bot."""
+        if self._stop is not None:
+            self._stop.set()
+        if self._reconcile_task is not None:
+            self._reconcile_task.cancel()
+            self._reconcile_task = None
+        if self._team_app is not None:
+            await self._stop_app("команда", self._team_app)
+            self._team_app = None
         for slug, (_token, app) in list(self._agent_apps.items()):
             await self._stop_app(slug, app)
         self._agent_apps.clear()
 
+    async def _run_async(self) -> None:
+        await self.start()
+        if self._team_app is None:
+            return  # team bot failed to start; nothing to wait on
+
+        # Standalone mode owns the process, so it handles Ctrl+C / SIGTERM here.
+        wait_stop = asyncio.Event()
+        loop = asyncio.get_running_loop()
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            try:
+                loop.add_signal_handler(sig, wait_stop.set)
+            except NotImplementedError:  # e.g. on Windows
+                pass
+
+        logger.info("Ctrl+C to stop.")
+        await wait_stop.wait()
+        logger.info("shutting down…")
+        await self.stop()
+
     def run(self) -> None:
+        """Standalone entry point (bots only, owns the event loop)."""
         asyncio.run(self._run_async())

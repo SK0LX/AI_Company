@@ -94,6 +94,11 @@ class Settings(BaseSettings):
     free_daily_limit: int = 50
     free_daily_warn_at: int = 10
 
+    # Admin panel + bot host (single process). Bind to localhost by default —
+    # the panel has no auth yet, so do not expose it on a public interface.
+    admin_host: str = "127.0.0.1"
+    admin_port: int = 8100
+
     # Secret used to encrypt per-agent Telegram tokens at rest. Leave empty to
     # auto-generate a stable key in data/secret.key (gitignored). Any string
     # works (it is normalized to a valid key).

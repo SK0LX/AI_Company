@@ -1,8 +1,9 @@
-"""Run the admin panel (v2). Local-only: binds to 127.0.0.1.
+"""Deprecated alias — the admin panel and bots now run as ONE process.
 
-    python run_admin.py        # then open http://127.0.0.1:8100
+Use ``python main.py`` instead. Kept so existing muscle memory still works; it
+simply launches the unified entry point.
 """
-import uvicorn
+from main import main
 
 if __name__ == "__main__":
-    uvicorn.run("src.web.app:app", host="127.0.0.1", port=8100, reload=False)
+    main()
