@@ -117,6 +117,14 @@ class Settings(BaseSettings):
     admin_host: str = "127.0.0.1"
     admin_port: int = 8100
 
+    # Telegram Mini App: public HTTPS URL where the dashboard is reachable (e.g.
+    # an ngrok/cloudflared tunnel to this server, or a deploy). When set, the bots
+    # show a "Дашборд" menu button that opens it inside Telegram. Empty = off.
+    webapp_url: str = ""
+    # Comma-separated Telegram user IDs allowed to open the Mini App. Empty = any
+    # user with a valid Telegram signature (still rejects forged requests).
+    webapp_allowed_user_ids: str = ""
+
     # Secret used to encrypt per-agent Telegram tokens at rest. Leave empty to
     # auto-generate a stable key in data/secret.key (gitignored). Any string
     # works (it is normalized to a valid key).

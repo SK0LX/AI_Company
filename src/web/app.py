@@ -251,6 +251,26 @@ def office_state() -> dict:
     return collab.office_state()
 
 
+@app.get("/api/webapp")
+def webapp_config() -> dict:
+    """Tells the page whether the Mini App is configured (URL set)."""
+    from src.config import settings
+
+    return {"enabled": bool(settings.webapp_url)}
+
+
+@app.post("/api/tg/auth")
+def tg_auth(payload: dict) -> dict:
+    """Validate a Telegram Mini App initData payload and authorize the user."""
+    from src import tg_auth as auth
+
+    user = auth.authenticate((payload or {}).get("init_data", ""))
+    if not user:
+        raise HTTPException(403, "Telegram authentication failed")
+    return {"ok": True, "user": {"id": user.get("id"),
+                                 "name": user.get("first_name") or user.get("username") or "user"}}
+
+
 @app.get("/api/proactive")
 def proactive_status() -> dict:
     from src.config import settings

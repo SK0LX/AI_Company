@@ -149,6 +149,26 @@ class TelegramManager:
                 app = self._build_agent_app(slug, registry.label(slug), token)
                 if await self._start_app(slug, app):
                     self._agent_apps[slug] = (token, app)
+                    await self._configure_webapp(slug, app)
+
+    @staticmethod
+    async def _configure_webapp(label: str, app: Application) -> None:
+        """Set the bot's menu button to open the dashboard as a Telegram Mini App
+        (only when WEBAPP_URL is a public HTTPS URL). Best-effort."""
+        from src.config import settings
+
+        if not settings.webapp_url:
+            return
+        try:
+            from telegram import MenuButtonWebApp, WebAppInfo
+
+            await app.bot.set_chat_menu_button(
+                menu_button=MenuButtonWebApp(
+                    text="Дашборд", web_app=WebAppInfo(url=settings.webapp_url)
+                )
+            )
+        except Exception:  # noqa: BLE001 - a bad URL must not break the bot
+            logger.exception("failed to set Mini App menu button for '%s'", label)
 
     async def post_to_team(self, text: str) -> None:
         """Send a message to the configured team chat via the team bot. Used by the
@@ -193,6 +213,7 @@ class TelegramManager:
             logger.error("team bot failed to start — check TELEGRAM_BOT_TOKEN")
             self._team_app = None
             return
+        await self._configure_webapp("команда", self._team_app)
         await self._reconcile_agents()
         self._stop = asyncio.Event()
         self._reconcile_task = asyncio.create_task(self._reconcile_loop())
