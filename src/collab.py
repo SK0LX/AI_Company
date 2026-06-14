@@ -24,7 +24,7 @@ from sqlmodel import select
 
 from src import bus as busmod
 from src.db.engine import get_session
-from src.db.models import Delegation, HelpRequest, Task, TaskEvent
+from src.db.models import Delegation, HelpRequest, Message, Task, TaskEvent
 from src.registry import registry
 
 logger = logging.getLogger(__name__)
@@ -38,6 +38,14 @@ Picker = Callable[[str, str, list[str]], Awaitable[Optional[str]]]
 def _agent_id(slug: Optional[str]) -> Optional[int]:
     agent = registry.get(slug) if slug else None
     return agent.id if agent else None
+
+
+def _slug_by_id() -> dict[int, str]:
+    return {a.id: a.slug for a in registry.list_agents() if a.id is not None}
+
+
+def _name_by_id() -> dict[int, str]:
+    return {a.id: a.name for a in registry.list_agents() if a.id is not None}
 
 
 # --- tasks + timeline -------------------------------------------------------
@@ -275,3 +283,95 @@ async def request_help(
     if helper:
         assign_help(help_id, helper, actor=requester)
     return helper
+
+
+# --- board reads (stage 6) --------------------------------------------------
+
+def list_tasks() -> list[dict]:
+    """All tasks for the kanban: owner/creator slugs, subtask count, timestamps."""
+    by_slug = _slug_by_id()
+    with get_session() as session:
+        tasks = session.exec(select(Task).order_by(Task.id.desc())).all()
+        children: dict[int, int] = {}
+        for t in session.exec(select(Task)).all():
+            if t.parent_task_id:
+                children[t.parent_task_id] = children.get(t.parent_task_id, 0) + 1
+        return [
+            {
+                "id": t.id,
+                "title": t.title,
+                "status": t.status,
+                "owner": by_slug.get(t.owner_agent_id),
+                "created_by": by_slug.get(t.created_by),
+                "parent_task_id": t.parent_task_id,
+                "subtasks": children.get(t.id, 0),
+                "created_at": t.created_at.isoformat(),
+                "updated_at": t.updated_at.isoformat(),
+            }
+            for t in tasks
+        ]
+
+
+def get_task(task_id: int) -> Optional[dict]:
+    by_slug = _slug_by_id()
+    with get_session() as session:
+        t = session.get(Task, task_id)
+        if not t:
+            return None
+        return {
+            "id": t.id,
+            "title": t.title,
+            "description": t.description,
+            "status": t.status,
+            "owner": by_slug.get(t.owner_agent_id),
+            "created_by": by_slug.get(t.created_by),
+            "parent_task_id": t.parent_task_id,
+            "created_at": t.created_at.isoformat(),
+            "updated_at": t.updated_at.isoformat(),
+        }
+
+
+def task_timeline(task_id: int) -> list[dict]:
+    """Task events enriched with the actor's slug (for the timeline view)."""
+    by_slug = _slug_by_id()
+    return [
+        {**e, "actor": by_slug.get(e["actor_agent_id"])}
+        for e in task_events(task_id)
+    ]
+
+
+def recent_messages(limit: int = 50) -> list[dict]:
+    """The latest MessageBus traffic (newest first)."""
+    by_slug = _slug_by_id()
+    with get_session() as session:
+        rows = session.exec(
+            select(Message).order_by(Message.id.desc()).limit(limit)
+        ).all()
+        return [
+            {
+                "id": m.id,
+                "ts": m.ts.isoformat(),
+                "from": by_slug.get(m.from_agent_id),
+                "to": by_slug.get(m.to_agent_id),
+                "kind": m.kind,
+                "text": m.text,
+            }
+            for m in rows
+        ]
+
+
+def interaction_graph() -> dict:
+    """Agents as nodes, accepted/total delegations between them as weighted edges."""
+    by_slug, by_name = _slug_by_id(), _name_by_id()
+    nodes = [{"slug": s, "name": by_name.get(i, s)} for i, s in by_slug.items()]
+    edges: dict[tuple[str, str], dict] = {}
+    with get_session() as session:
+        for d in session.exec(select(Delegation)).all():
+            frm, to = by_slug.get(d.from_agent_id), by_slug.get(d.to_agent_id)
+            if not frm or not to:
+                continue
+            edge = edges.setdefault((frm, to), {"from": frm, "to": to, "count": 0, "accepted": 0})
+            edge["count"] += 1
+            if d.status == "accepted":
+                edge["accepted"] += 1
+    return {"nodes": nodes, "edges": list(edges.values())}

@@ -187,6 +187,46 @@ def drop_skill(slug: str, skill_id: int) -> None:
         raise HTTPException(409, str(exc))
 
 
+# --- board: tasks / events / messages / graph (stage 6) ---------------------
+
+@app.get("/api/tasks")
+def list_tasks() -> list[dict]:
+    from src import collab
+
+    return collab.list_tasks()
+
+
+@app.get("/api/tasks/{task_id}")
+def get_task(task_id: int) -> dict:
+    from src import collab
+
+    task = collab.get_task(task_id)
+    if not task:
+        raise HTTPException(404, f"task {task_id} not found")
+    return task
+
+
+@app.get("/api/tasks/{task_id}/events")
+def task_events(task_id: int) -> list[dict]:
+    from src import collab
+
+    return collab.task_timeline(task_id)
+
+
+@app.get("/api/messages")
+def list_messages(limit: int = 50) -> list[dict]:
+    from src import collab
+
+    return collab.recent_messages(limit=max(1, min(limit, 500)))
+
+
+@app.get("/api/graph")
+def interaction_graph() -> dict:
+    from src import collab
+
+    return collab.interaction_graph()
+
+
 # --- static page ------------------------------------------------------------
 
 @app.get("/")
