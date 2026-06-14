@@ -101,6 +101,17 @@ class Settings(BaseSettings):
     # flow run regardless of this flag (they cost no LLM).
     enable_negotiation: bool = False
 
+    # Proactive posting (v2 stage 7): agents post short updates to the team chat
+    # on events (task done, help needed, declined). OFF by default. Requires a
+    # team chat id and the per-agent `proactive` permission; guardrails (rate
+    # limit, dedup, mute) always apply. proactive_min_interval is the global
+    # cooldown between any two proactive posts (seconds).
+    enable_proactive: bool = False
+    team_chat_id: int = 0  # Telegram chat the team posts into (0 = disabled)
+    proactive_min_interval: int = 30
+    proactive_max_per_window: int = 5  # per agent
+    proactive_window: int = 300  # seconds for the per-agent rate window
+
     # Admin panel + bot host (single process). Bind to localhost by default —
     # the panel has no auth yet, so do not expose it on a public interface.
     admin_host: str = "127.0.0.1"
