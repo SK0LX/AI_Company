@@ -15,6 +15,9 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
+import functools
+import json
+import logging
 import os
 import re
 import sys
@@ -24,6 +27,8 @@ from langchain_core.tools import tool
 
 from src.config import settings
 
+logger = logging.getLogger(__name__)
+
 _MAX_OUTPUT = 4000
 _MAX_FILE_READ = 20000
 
@@ -32,6 +37,80 @@ _MAX_FILE_READ = 20000
 _project_subdir: contextvars.ContextVar[str] = contextvars.ContextVar(
     "project_subdir", default=""
 )
+
+# Slug of the agent currently running a tool. Set per specialist run so the
+# @requires guard can check that agent's permissions and attribute audit entries.
+_current_agent: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "current_agent", default=""
+)
+
+
+def set_current_agent(slug: str) -> None:
+    """Mark which agent is about to use the tools (for @requires + auditing)."""
+    _current_agent.set(slug or "")
+
+
+# --- permission enforcement (v2 stage 4) ------------------------------------
+
+def _agent_has(slug: str, permission: str) -> bool:
+    from src.registry import registry
+
+    return registry.permissions(slug).get(permission) == "true"
+
+
+def _audit(actor: str, action: str, target: str, **details: object) -> None:
+    """Append a security-relevant action to the audit_log table. Best-effort."""
+    try:
+        from src.db.engine import get_session
+        from src.db.models import AuditLog
+
+        with get_session() as session:
+            session.add(
+                AuditLog(
+                    actor=actor or "system",
+                    action=action,
+                    target=target,
+                    details_json=json.dumps(details, default=str),
+                )
+            )
+            session.commit()
+    except Exception:  # noqa: BLE001 - auditing must never break a tool call
+        logger.exception("failed to write audit log (%s/%s)", action, target)
+
+
+def requires(permission: str):
+    """Decorator: block a tool unless the CURRENT agent holds ``permission``.
+
+    Enforced only when an agent context is set (:func:`set_current_agent`);
+    standalone calls with no agent attached pass through. Denials return a clear
+    string the model can read, and are recorded in the audit log. Apply BELOW
+    ``@tool`` so langchain still introspects the real signature/docstring."""
+
+    def decorator(func):
+        denial = f"[denied: this agent lacks the '{permission}' permission]"
+
+        if asyncio.iscoroutinefunction(func):
+            @functools.wraps(func)
+            async def awrapper(*args, **kwargs):
+                slug = _current_agent.get()
+                if slug and not _agent_has(slug, permission):
+                    _audit(slug, "denied", func.__name__, permission=permission)
+                    return denial
+                return await func(*args, **kwargs)
+
+            return awrapper
+
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            slug = _current_agent.get()
+            if slug and not _agent_has(slug, permission):
+                _audit(slug, "denied", func.__name__, permission=permission)
+                return denial
+            return func(*args, **kwargs)
+
+        return wrapper
+
+    return decorator
 
 
 def sanitize_project(name: str) -> str:
@@ -96,6 +175,7 @@ def _prune_empty_dirs(start: str) -> None:
 
 
 @tool
+@requires("can_edit_files")
 def write_file(path: str, content: str) -> str:
     """Create or overwrite a file in the CURRENT project's folder.
 
@@ -115,6 +195,7 @@ def write_file(path: str, content: str) -> str:
 
 
 @tool
+@requires("can_edit_files")
 def move_file(src: str, dst: str) -> str:
     """Move or rename a file inside the CURRENT project. Both paths are relative
     to the project root; parent folders for `dst` are created automatically. Use
@@ -134,6 +215,7 @@ def move_file(src: str, dst: str) -> str:
 
 
 @tool
+@requires("can_edit_files")
 def delete_file(path: str) -> str:
     """Delete a stray or duplicate file from the CURRENT project. `path` is
     relative to the project root. Use sparingly, only to clean up files that do
@@ -315,6 +397,7 @@ def wiki_index(max_notes: int = 30) -> str:
 
 
 @tool
+@requires("can_run_shell")
 async def run_shell(command: str) -> str:
     """Run a shell command in the CURRENT project's folder and return its combined
     output. Use this for real installs/builds/tests: `npm install`, `npm test`,

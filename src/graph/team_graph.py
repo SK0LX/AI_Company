@@ -32,6 +32,7 @@ from src.registry import registry
 from src.agents.tools import (
     current_project_files,
     sanitize_project,
+    set_current_agent,
     set_project_subdir,
     wiki_index,
     wiki_read_note,
@@ -1057,6 +1058,7 @@ async def arun_specialist(role: str, text: str, project: str = "") -> str:
     """
     if _uses_tools(role):
         set_project_subdir(project)
+        set_current_agent(role)  # so @requires can check this agent's permissions
         result = await _tool_agent(role).ainvoke(
             {"messages": [HumanMessage(content=text)]},
             # Allow many tool calls so multi-file work isn't cut short.
