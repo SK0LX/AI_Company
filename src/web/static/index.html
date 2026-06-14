@@ -88,6 +88,19 @@
     .fi .verb { color:var(--muted); }
     .fi .txt { margin-top:2px; word-break:break-word; }
     .fi .when { color:var(--muted); font-size:11px; white-space:nowrap; }
+    /* office map */
+    .office { display:flex; gap:14px; align-items:stretch; }
+    .office-canvas { flex:2; min-width:0; background:radial-gradient(120% 120% at 50% 0%, #141a2b 0%, #0c0f17 70%);
+                     border:1px solid var(--line); border-radius:14px; padding:6px; }
+    #office { width:100%; height:auto; display:block; }
+    .office-side { flex:1; min-width:240px; max-width:360px; background:var(--panel);
+                   border:1px solid var(--line); border-radius:14px; padding:14px; overflow:auto; max-height:572px; }
+    .office-side .fi { background:var(--bg); }
+    .onode-name { fill:var(--text); font-size:12px; font-weight:600; }
+    .onode-role { fill:var(--muted); font-size:10px; }
+    .onode-init { fill:#fff; font-size:15px; font-weight:700; }
+    .oedge { stroke:#4a5570; }
+    @media (max-width:860px) { .office { flex-direction:column; } .office-side { max-width:none; } }
   </style>
 </head>
 <body>
@@ -96,6 +109,7 @@
       <h1>🏢 AI IT Company</h1>
       <nav class="tabs">
         <button class="tab active" id="tab-agents" onclick="showView('agents')">Агенты</button>
+        <button class="tab" id="tab-office" onclick="showView('office')">Офис</button>
         <button class="tab" id="tab-board" onclick="showView('board')">Доска</button>
         <button class="tab" id="tab-activity" onclick="showView('activity')">Активность</button>
       </nav>
@@ -141,6 +155,19 @@
         <button onclick="loadActivity()">↻ Обновить</button>
       </div>
       <div class="feed" id="feed"></div>
+    </section>
+
+    <!-- OFFICE MAP -->
+    <section id="view-office" class="hidden">
+      <div class="office">
+        <div class="office-canvas">
+          <svg id="office" viewBox="0 0 1000 600" preserveAspectRatio="xMidYMid meet"></svg>
+        </div>
+        <aside class="office-side">
+          <h4 style="margin:0 0 10px; color:var(--muted); font-size:12px; text-transform:uppercase">Активность офиса</h4>
+          <div class="feed" id="officeFeed"></div>
+        </aside>
+      </div>
     </section>
   </main>
 
@@ -215,14 +242,79 @@ let curView = 'agents';
 function showView(v) {
   curView = v;
   $('view-agents').classList.toggle('hidden', v !== 'agents');
+  $('view-office').classList.toggle('hidden', v !== 'office');
   $('view-board').classList.toggle('hidden', v !== 'board');
   $('view-activity').classList.toggle('hidden', v !== 'activity');
   $('tab-agents').classList.toggle('active', v === 'agents');
+  $('tab-office').classList.toggle('active', v === 'office');
   $('tab-board').classList.toggle('active', v === 'board');
   $('tab-activity').classList.toggle('active', v === 'activity');
   $('addBtn').style.visibility = v === 'agents' ? 'visible' : 'hidden';
   if (v === 'board') { loadBoard(); loadGraph(); }
   if (v === 'activity') loadActivity();
+  if (v === 'office') loadOffice();
+}
+
+// ---- office map ------------------------------------------------------------
+function hueOf(s) { let h = 0; for (const c of s) h = (h * 31 + c.charCodeAt(0)) % 360; return h; }
+function initials(name) {
+  return (name || '?').trim().split(/\s+/).map(w => w[0] || '').join('').slice(0, 2).toUpperCase();
+}
+async function loadOffice() {
+  let data = {nodes:[], edges:[]};
+  try { data = await (await fetch('/api/office')).json(); } catch(e) {}
+  const W = 1000, H = 600, cx = W/2, cy = H/2, RX = 390, RY = 230;
+  const nodes = data.nodes || [];
+  const pos = {};
+  nodes.forEach((n, i) => {
+    const a = (i / Math.max(1, nodes.length)) * 2*Math.PI - Math.PI/2;
+    pos[n.slug] = { x: cx + RX*Math.cos(a), y: cy + RY*Math.sin(a) };
+  });
+  const maxc = Math.max(1, ...(data.edges||[]).map(e => e.count));
+  const edges = (data.edges||[]).map(e => {
+    const a = pos[e.from], b = pos[e.to]; if (!a||!b) return '';
+    const w = 1 + 4*(e.count/maxc);
+    return `<line class="oedge" x1="${a.x}" y1="${a.y}" x2="${b.x}" y2="${b.y}"
+            stroke-width="${w.toFixed(1)}" opacity="0.45" marker-end="url(#oarrow)"/>`;
+  }).join('');
+  const cells = nodes.map(n => {
+    const p = pos[n.slug]; const h = hueOf(n.slug);
+    const fill = n.enabled ? `hsl(${h} 55% 45%)` : '#2a2f3a';
+    const dot = n.busy ? 'var(--ok)' : (n.enabled ? 'var(--muted)' : 'var(--danger)');
+    const pulse = n.busy ? `
+      <circle cx="${p.x}" cy="${p.y}" r="30" fill="none" stroke="hsl(${h} 70% 55%)" stroke-width="2">
+        <animate attributeName="r" values="30;46" dur="1.8s" repeatCount="indefinite"/>
+        <animate attributeName="opacity" values="0.6;0" dur="1.8s" repeatCount="indefinite"/>
+      </circle>` : '';
+    const ring = n.slug === 'ceo' ? `<circle cx="${p.x}" cy="${p.y}" r="33" fill="none" stroke="var(--accent)" stroke-width="2"/>` : '';
+    const task = n.busy && n.current_task
+      ? `<title>${esc(n.name)} — ${esc(n.current_task)}</title>` : `<title>${esc(n.name)}</title>`;
+    return `<g style="cursor:default" opacity="${n.enabled ? 1 : 0.5}">${task}
+      ${pulse}${ring}
+      <circle cx="${p.x}" cy="${p.y}" r="28" fill="${fill}" stroke="#0c0f17" stroke-width="2"/>
+      <text class="onode-init" x="${p.x}" y="${p.y+5}" text-anchor="middle">${esc(initials(n.name))}</text>
+      <circle cx="${p.x+20}" cy="${p.y-20}" r="5" fill="${dot}" stroke="#0c0f17" stroke-width="1.5"/>
+      <text class="onode-name" x="${p.x}" y="${p.y+48}" text-anchor="middle">${esc(n.name)}</text>
+      <text class="onode-role" x="${p.x}" y="${p.y+62}" text-anchor="middle">${esc(n.role)}</text>
+    </g>`;
+  }).join('');
+  $('office').innerHTML = `
+    <defs><marker id="oarrow" markerWidth="9" markerHeight="9" refX="30" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L7,3 z" fill="#4a5570"/></marker></defs>
+    ${edges}${cells}` || '<text x="20" y="30" class="onode-name">нет агентов</text>';
+
+  // side activity panel (compact)
+  let items = [];
+  try { items = await (await fetch('/api/activity?category=all&limit=14')).json(); } catch(e) {}
+  $('officeFeed').innerHTML = items.map(i => `
+    <div class="fi ${esc(i.category)}">
+      <div class="ico">${({tasks:'📋',thoughts:'💭',system:'⚙️'})[i.category] || '•'}</div>
+      <div class="body">
+        <div class="head"><span class="who">${esc(i.actor || 'система')}</span>
+          <span class="verb">${esc(i.verb || i.type)}</span></div>
+        ${i.text ? `<div class="txt">${esc(i.text)}</div>` : ''}
+      </div>
+    </div>`).join('') || '<div class="muted">пока тихо</div>';
 }
 
 // ---- activity feed ---------------------------------------------------------
@@ -373,6 +465,7 @@ function scheduleRefresh() {
   refreshTimer = setTimeout(() => {
     if (curView === 'board') { loadBoard(); loadGraph(); }
     if (curView === 'activity') loadActivity();
+    if (curView === 'office') loadOffice();
     const open = $('drawer').classList.contains('open');
     if (open && $('drawer').dataset.task) openTimeline(Number($('drawer').dataset.task));
   }, 400);

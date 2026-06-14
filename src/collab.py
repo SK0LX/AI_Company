@@ -458,6 +458,41 @@ def activity_feed(category: str = "all", limit: int = 80) -> list[dict]:
     return items[:limit]
 
 
+def office_state() -> dict:
+    """A live snapshot of the team for the office map: each agent with role,
+    busy flag (owns an in-progress task), current task, and last-seen time, plus
+    the delegation edges between them."""
+    by_slug = _slug_by_id()
+    roster = {a.slug: a for a in registry.list_agents(enabled_only=False)}
+    busy: dict[str, str] = {}
+    last_seen: dict[str, str] = {}
+    with get_session() as session:
+        for t in session.exec(select(Task).where(Task.status == "in_progress")).all():
+            owner = by_slug.get(t.owner_agent_id)
+            if owner and owner not in busy:
+                busy[owner] = t.title
+        for e in session.exec(
+            select(TaskEvent).order_by(TaskEvent.id.desc()).limit(300)
+        ).all():
+            slug = by_slug.get(e.actor_agent_id)
+            if slug and slug not in last_seen:
+                last_seen[slug] = e.ts.isoformat()
+    graph = interaction_graph()
+    nodes = []
+    for n in graph["nodes"]:
+        agent = roster.get(n["slug"])
+        nodes.append({
+            "slug": n["slug"],
+            "name": n["name"],
+            "role": agent.role if agent else "",
+            "enabled": agent.enabled if agent else True,
+            "busy": n["slug"] in busy,
+            "current_task": busy.get(n["slug"]),
+            "last_seen": last_seen.get(n["slug"]),
+        })
+    return {"nodes": nodes, "edges": graph["edges"]}
+
+
 def interaction_graph() -> dict:
     """Agents as nodes, accepted/total delegations between them as weighted edges."""
     by_slug, by_name = _slug_by_id(), _name_by_id()

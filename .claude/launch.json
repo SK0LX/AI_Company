@@ -1,0 +1,12 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "admin",
+      "runtimeExecutable": ".venv/bin/python",
+      "runtimeArgs": ["main.py"],
+      "port": 8100,
+      "autoPort": false
+    }
+  ]
+}

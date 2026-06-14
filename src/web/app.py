@@ -244,6 +244,13 @@ def activity_feed(category: str = "all", limit: int = 80) -> list[dict]:
     return collab.activity_feed(category, limit=max(1, min(limit, 300)))
 
 
+@app.get("/api/office")
+def office_state() -> dict:
+    from src import collab
+
+    return collab.office_state()
+
+
 @app.get("/api/proactive")
 def proactive_status() -> dict:
     from src.config import settings
