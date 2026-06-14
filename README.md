@@ -114,6 +114,9 @@
   (задача готова, нужна помощь, отказ) — шаблонными сообщениями, с guardrails
   (cooldown, rate-limit, дедуп, mute, право `proactive` на агента). Включается
   через `ENABLE_PROACTIVE` + `TEAM_CHAT_ID`.
+- **Тесты:** 20 наборов без pytest и без расхода LLM-квоты — unit (шина, реестр,
+  крипто, навыки, права, провайдеры), интеграционные через FastAPI `TestClient`
+  (весь REST + WebSocket) и сквозной e2e-сценарий. Запуск: `python tests/run_all.py`.
 
 ```
 src/
@@ -141,7 +144,7 @@ src/
 agents/<slug>/skills/     # Навыки агентов (отслеживаются в git)
 main.py                   # Точка входа: бот + админка в одном процессе (polling)
 run_admin.py              # Алиас на main.py
-tests/                    # Тесты без pytest/LLM: python tests/test_*.py
+tests/                    # Тесты без pytest/LLM: python tests/run_all.py
 docs/SPEC_v2.md           # ТЗ развития платформы
 ```
 
