@@ -24,3 +24,5 @@ data/
 # (the registry is the source of truth). The skills/ subtree IS tracked.
 agents/*/manifest.yaml
 agents/*/prompt.md
+# Scratch agent folders created by tests (slugs start with "_").
+agents/_*/

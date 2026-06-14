@@ -59,6 +59,12 @@ def main() -> None:
             assert any(e["from"] == "ceo" and e["to"] == SLUG for e in g["edges"])
         finally:
             c.delete(f"/api/agents/{SLUG}")
+            # the discover endpoint scaffolds a folder for the temp agent — remove it
+            import shutil
+
+            from src.agent_fs import agent_dir
+
+            shutil.rmtree(agent_dir(SLUG), ignore_errors=True)
 
     print("e2e flow tests: OK")
 
