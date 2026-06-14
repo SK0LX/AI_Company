@@ -70,6 +70,24 @@
     .tl li { padding:8px 0; border-bottom:1px solid var(--line); font-size:13px; }
     .tl .ty { color:var(--accent); font-weight:600; margin-right:6px; }
     .tl .who { color:var(--muted); }
+    /* activity feed */
+    .filters { display:flex; gap:6px; }
+    .filt { padding:6px 12px; border-radius:999px; color:var(--muted); }
+    .filt.active { color:var(--text); border-color:var(--accent); }
+    .feed { display:flex; flex-direction:column; gap:8px; }
+    .fi { display:flex; gap:12px; align-items:flex-start; background:var(--panel);
+          border:1px solid var(--line); border-left:3px solid var(--line);
+          border-radius:8px; padding:10px 12px; }
+    .fi.tasks { border-left-color:var(--accent); }
+    .fi.thoughts { border-left-color:#a06bff; }
+    .fi.system { border-left-color:var(--warn); }
+    .fi .ico { font-size:16px; line-height:1.4; }
+    .fi .body { flex:1; min-width:0; }
+    .fi .head { display:flex; gap:8px; align-items:baseline; flex-wrap:wrap; }
+    .fi .who { font-weight:600; }
+    .fi .verb { color:var(--muted); }
+    .fi .txt { margin-top:2px; word-break:break-word; }
+    .fi .when { color:var(--muted); font-size:11px; white-space:nowrap; }
   </style>
 </head>
 <body>
@@ -79,6 +97,7 @@
       <nav class="tabs">
         <button class="tab active" id="tab-agents" onclick="showView('agents')">Агенты</button>
         <button class="tab" id="tab-board" onclick="showView('board')">Доска</button>
+        <button class="tab" id="tab-activity" onclick="showView('activity')">Активность</button>
       </nav>
     </div>
     <div style="display:flex; align-items:center; gap:14px">
@@ -108,6 +127,20 @@
       <div class="board" id="board"></div>
       <h3>Граф взаимодействий <span class="muted" style="font-weight:400">— делегирования между агентами</span></h3>
       <svg id="graph" viewBox="0 0 1000 420" preserveAspectRatio="xMidYMid meet"></svg>
+    </section>
+
+    <!-- ACTIVITY -->
+    <section id="view-activity" class="hidden">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px">
+        <div class="filters">
+          <button class="filt active" data-cat="all" onclick="setCat('all')">Все</button>
+          <button class="filt" data-cat="tasks" onclick="setCat('tasks')">Задачи</button>
+          <button class="filt" data-cat="thoughts" onclick="setCat('thoughts')">Сознания</button>
+          <button class="filt" data-cat="system" onclick="setCat('system')">Система</button>
+        </div>
+        <button onclick="loadActivity()">↻ Обновить</button>
+      </div>
+      <div class="feed" id="feed"></div>
     </section>
   </main>
 
@@ -178,13 +211,48 @@ const $ = (id) => document.getElementById(id);
 const esc = (s) => (s==null?'':String(s)).replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
 
 // ---- view switching --------------------------------------------------------
+let curView = 'agents';
 function showView(v) {
+  curView = v;
   $('view-agents').classList.toggle('hidden', v !== 'agents');
   $('view-board').classList.toggle('hidden', v !== 'board');
+  $('view-activity').classList.toggle('hidden', v !== 'activity');
   $('tab-agents').classList.toggle('active', v === 'agents');
   $('tab-board').classList.toggle('active', v === 'board');
+  $('tab-activity').classList.toggle('active', v === 'activity');
   $('addBtn').style.visibility = v === 'agents' ? 'visible' : 'hidden';
   if (v === 'board') { loadBoard(); loadGraph(); }
+  if (v === 'activity') loadActivity();
+}
+
+// ---- activity feed ---------------------------------------------------------
+let curCat = 'all';
+const CAT_ICON = { tasks:'📋', thoughts:'💭', system:'⚙️' };
+function setCat(c) {
+  curCat = c;
+  document.querySelectorAll('.filt').forEach(b => b.classList.toggle('active', b.dataset.cat === c));
+  loadActivity();
+}
+function fmtTime(iso) {
+  try { return new Date(iso + 'Z').toLocaleString('ru-RU', {hour:'2-digit',minute:'2-digit',day:'2-digit',month:'2-digit'}); }
+  catch(e) { return iso; }
+}
+async function loadActivity() {
+  let items = [];
+  try { items = await (await fetch(`/api/activity?category=${curCat}&limit=120`)).json(); } catch(e) {}
+  $('feed').innerHTML = items.map(i => `
+    <div class="fi ${esc(i.category)}">
+      <div class="ico">${CAT_ICON[i.category] || '•'}</div>
+      <div class="body">
+        <div class="head">
+          <span class="who">${esc(i.actor || 'система')}</span>
+          <span class="verb">${esc(i.verb || i.type)}</span>
+          ${i.task_id ? `<span class="pill">#${i.task_id}</span>` : ''}
+        </div>
+        ${i.text ? `<div class="txt">${esc(i.text)}</div>` : ''}
+      </div>
+      <div class="when">${fmtTime(i.ts)}</div>
+    </div>`).join('') || '<div class="muted">пока пусто</div>';
 }
 
 // ---- agents table ----------------------------------------------------------
@@ -303,7 +371,8 @@ function setLive(on) {
 function scheduleRefresh() {
   clearTimeout(refreshTimer);
   refreshTimer = setTimeout(() => {
-    if (!$('view-board').classList.contains('hidden')) { loadBoard(); loadGraph(); }
+    if (curView === 'board') { loadBoard(); loadGraph(); }
+    if (curView === 'activity') loadActivity();
     const open = $('drawer').classList.contains('open');
     if (open && $('drawer').dataset.task) openTimeline(Number($('drawer').dataset.task));
   }, 400);
