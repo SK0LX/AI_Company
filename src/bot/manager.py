@@ -150,6 +150,19 @@ class TelegramManager:
                 if await self._start_app(slug, app):
                     self._agent_apps[slug] = (token, app)
 
+    async def post_to_team(self, text: str) -> None:
+        """Send a message to the configured team chat via the team bot. Used by the
+        proactive service; no-ops if there is no team chat or the bot is down."""
+        from src.config import settings
+
+        chat_id = settings.team_chat_id
+        if not chat_id or self._team_app is None:
+            return
+        try:
+            await self._team_app.bot.send_message(chat_id=chat_id, text=text)
+        except Exception:  # noqa: BLE001 - a failed proactive post must not crash anything
+            logger.exception("failed to post to team chat")
+
     async def reconcile_now(self) -> None:
         """Reconcile the running bots with the registry right now.
 

@@ -29,23 +29,31 @@ _STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 # The bots run inside this app's event loop. The admin write endpoints below ask
 # it to reconcile immediately so a token change starts/stops a bot at once.
 manager = TelegramManager()
+proactive = None  # ProactiveService, created at startup
 
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
+    global proactive
     # Create tables, seed the default roles on first run, load the cache.
     registry.setup()
     # Materialize each agent's folder (agents/<slug>/) so skills can live there,
     # then discover + register the skills found in those folders.
     from src.agent_fs import scaffold_all
+    from src.proactive import ProactiveService
     from src.skills import skill_loader
 
     scaffold_all()
     skill_loader.discover()
     await manager.start()
+    # Agents post to the team chat on events (guardrailed; off unless configured).
+    proactive = ProactiveService(manager.post_to_team)
+    await proactive.start()
     try:
         yield
     finally:
+        if proactive is not None:
+            await proactive.stop()
         await manager.stop()
 
 
@@ -225,6 +233,28 @@ def interaction_graph() -> dict:
     from src import collab
 
     return collab.interaction_graph()
+
+
+@app.get("/api/proactive")
+def proactive_status() -> dict:
+    from src.config import settings
+
+    return {
+        "enabled": settings.enable_proactive,
+        "muted": proactive.muted if proactive else True,
+        "team_chat_id": settings.team_chat_id,
+    }
+
+
+@app.post("/api/proactive/mute")
+def proactive_mute(payload: dict) -> dict:
+    if proactive is None:
+        raise HTTPException(503, "proactive service not running")
+    if payload.get("muted"):
+        proactive.mute()
+    else:
+        proactive.unmute()
+    return {"muted": proactive.muted}
 
 
 @app.websocket("/ws/events")

@@ -138,6 +138,7 @@
           <label><input type="checkbox" id="p_can_run_shell"> can_run_shell</label>
           <label><input type="checkbox" id="p_can_edit_others_code"> can_edit_others_code</label>
           <label><input type="checkbox" id="p_can_modify_agents"> can_modify_agents</label>
+          <label><input type="checkbox" id="p_proactive"> proactive</label>
         </div></div>
       <div class="grid2">
         <div class="field"><label>delegate_to (через запятую или *)</label>
@@ -323,6 +324,7 @@ function setPerms(perms) {
   $('p_can_run_shell').checked = perms.can_run_shell === 'true';
   $('p_can_edit_others_code').checked = perms.can_edit_others_code === 'true';
   $('p_can_modify_agents').checked = perms.can_modify_agents === 'true';
+  $('p_proactive').checked = perms.proactive === 'true';
   $('f_delegate').value = (perms.delegate_to || '').replace(/^"|"$/g, '');
 }
 function collectPerms() {
@@ -331,6 +333,7 @@ function collectPerms() {
   if ($('p_can_run_shell').checked) p.can_run_shell = 'true';
   if ($('p_can_edit_others_code').checked) p.can_edit_others_code = 'true';
   if ($('p_can_modify_agents').checked) p.can_modify_agents = 'true';
+  if ($('p_proactive').checked) p.proactive = 'true';
   const d = $('f_delegate').value.trim();
   if (d) p.delegate_to = d;
   return p;
