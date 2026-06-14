@@ -14,7 +14,13 @@ DEFAULT_MODELS = {
     "google": "gemini-2.5-flash-lite",
     "anthropic": "claude-sonnet-4-6",
     "openrouter": "openai/gpt-oss-120b:free",
+    # Any OpenAI-compatible endpoint (Groq, Together, vLLM, local, ...). No
+    # sensible default model — must be set per agent (or via AGENT_MODEL).
+    "openai_compatible": "",
 }
+
+# Providers selectable per agent (and globally via LLM_PROVIDER).
+SUPPORTED_PROVIDERS = ("openrouter", "anthropic", "google", "openai_compatible")
 
 # Optional stronger default for the CEO (orchestration + structured routing).
 # Falls back to DEFAULT_MODELS[provider] when the provider isn't listed here.

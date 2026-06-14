@@ -371,50 +371,87 @@ def _mark_task_done(state: TeamState) -> None:
 
 # --- models -----------------------------------------------------------------
 
-def _make_model(model_name: str) -> BaseChatModel:
-    """Build a chat model for the configured provider."""
-    if settings.llm_provider == "google":
+# Anthropic models that REJECT sampling params (temperature/top_p/top_k) — see
+# the claude-api skill. Sending temperature to these returns a 400.
+_ANTHROPIC_NO_TEMPERATURE = ("claude-opus-4-7", "claude-opus-4-8", "claude-fable-5")
+
+
+def _global_key(provider: str) -> str:
+    return {
+        "google": settings.google_api_key,
+        "anthropic": settings.anthropic_api_key,
+        "openrouter": settings.openrouter_api_key,
+        "openai_compatible": settings.openrouter_api_key,
+    }.get(provider, "")
+
+
+def _resolve_spec(slug: Optional[str], *, is_ceo: bool = False) -> tuple[str, str, str, str]:
+    """Resolve the (provider, model, api_key, base_url) for an agent.
+
+    Per-agent values from the registry win; otherwise fall back to the global
+    settings. This is what lets one agent run on Claude while another runs on an
+    OpenRouter free model or any OpenAI-compatible endpoint."""
+    provider = ((registry.provider_for(slug) if slug else "") or settings.llm_provider).strip()
+    model = (registry.model_for(slug) if slug else "").strip()
+    if not model:
+        if provider == settings.llm_provider:
+            model = settings.ceo_model_resolved if is_ceo else settings.agent_model_resolved
+        else:
+            from src.config import DEFAULT_CEO_MODELS, DEFAULT_MODELS
+
+            model = (DEFAULT_CEO_MODELS.get(provider) if is_ceo else "") or DEFAULT_MODELS.get(provider, "")
+    api_key = (registry.api_key_for(slug) if slug else "") or _global_key(provider)
+    base_url = (registry.base_url_for(slug) if slug else "").strip()
+    return provider, model, api_key, base_url
+
+
+def _make_model(provider: str, model_name: str, api_key: str, base_url: str) -> BaseChatModel:
+    """Build a LangChain chat model for ANY supported provider."""
+    if provider == "google":
         from langchain_google_genai import ChatGoogleGenerativeAI
 
         return ChatGoogleGenerativeAI(
             model=model_name,
-            google_api_key=settings.google_api_key,
+            google_api_key=api_key or settings.google_api_key,
             max_output_tokens=settings.max_tokens,
             temperature=settings.temperature,
             # The SDK retries internally too; keep it low so a hard quota 429
             # fails fast instead of stacking with our own _retry wrapper.
             max_retries=1,
         )
-    if settings.llm_provider == "anthropic":
+    if provider == "anthropic":
         from langchain_anthropic import ChatAnthropic
 
-        return ChatAnthropic(
+        kwargs: dict = dict(
             model=model_name,
-            api_key=settings.anthropic_api_key,
+            api_key=api_key or settings.anthropic_api_key,
             max_tokens=settings.max_tokens,
-            temperature=settings.temperature,
             max_retries=1,
         )
-    if settings.llm_provider == "openrouter":
+        # Opus 4.7/4.8 / Fable 5 reject temperature (claude-api skill) — omit it.
+        if not any(model_name.startswith(p) for p in _ANTHROPIC_NO_TEMPERATURE):
+            kwargs["temperature"] = settings.temperature
+        return ChatAnthropic(**kwargs)
+    if provider in ("openrouter", "openai_compatible"):
         from langchain_openai import ChatOpenAI
 
+        is_or = provider == "openrouter"
+        url = base_url or ("https://openrouter.ai/api/v1" if is_or else "")
         return ChatOpenAI(
             model=model_name,
-            api_key=settings.openrouter_api_key,
-            base_url="https://openrouter.ai/api/v1",
+            api_key=api_key or (settings.openrouter_api_key if is_or else "x"),
+            base_url=url or None,
             max_tokens=settings.max_tokens,
             temperature=settings.temperature,
             max_retries=1,
-            # Count every call against the OpenRouter free daily cap so we can
-            # warn the user before they hit it.
-            callbacks=[quota.counter],
-            # Optional OpenRouter attribution headers (used for their rankings).
-            default_headers={
-                "HTTP-Referer": "https://github.com/ai-it-company",
-                "X-Title": "AI IT Company",
-            },
+            # Count OpenRouter calls against the free daily cap (warn before it hits).
+            callbacks=[quota.counter] if is_or else None,
+            default_headers=(
+                {"HTTP-Referer": "https://github.com/ai-it-company", "X-Title": "AI IT Company"}
+                if is_or else None
+            ),
         )
-    raise ValueError(f"Unknown LLM_PROVIDER: {settings.llm_provider!r}")
+    raise ValueError(f"Unknown LLM provider: {provider!r}")
 
 
 def _retry(runnable: Runnable) -> Runnable:
@@ -426,20 +463,19 @@ def _retry(runnable: Runnable) -> Runnable:
     )
 
 
-@lru_cache(maxsize=12)
-def _model_by_name(model_name: str) -> BaseChatModel:
-    return _make_model(model_name)
+@lru_cache(maxsize=32)
+def _model_cached(provider: str, model_name: str, api_key: str, base_url: str) -> BaseChatModel:
+    return _make_model(provider, model_name, api_key, base_url)
 
 
 def _ceo_model() -> BaseChatModel:
-    return _model_by_name(registry.model_for("ceo") or settings.ceo_model_resolved)
+    return _model_cached(*_resolve_spec("ceo", is_ceo=True))
 
 
 def _specialist_model(slug: Optional[str] = None) -> BaseChatModel:
-    """Model for a specialist. Honors the agent's per-agent `model` from the
-    registry; falls back to the global default."""
-    name = (registry.model_for(slug) if slug else "") or settings.agent_model_resolved
-    return _model_by_name(name)
+    """Model for a specialist. Honors the agent's per-agent provider/model/key/
+    base_url from the registry; falls back to the global default."""
+    return _model_cached(*_resolve_spec(slug))
 
 
 # Roles that work with real files and therefore run as tool-enabled agents.

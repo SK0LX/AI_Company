@@ -26,7 +26,12 @@ class Agent(SQLModel, table=True):
     name: str  # human label, e.g. "Backend-разработчик"
     role: str  # canonical role family (often == slug for the seed set)
     system_prompt: str
+    # LLM connection (per-agent). Empty provider -> the global LLM_PROVIDER.
+    # provider ∈ openrouter | anthropic | google | openai_compatible
+    provider: str = ""
     model: str = ""  # empty -> provider default
+    api_key: str = ""  # encrypted; empty -> the global key for the provider
+    base_url: str = ""  # for openai_compatible (any OpenAI-compatible endpoint)
     telegram_token: str = ""  # encrypted in a later stage; empty for now
     telegram_username: str = ""
     folder_path: str = ""  # agents/<slug>/ — its own codebase (later stage)

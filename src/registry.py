@@ -174,6 +174,19 @@ class Registry:
         agent = self._by_slug.get(slug)
         return (agent.model or "") if agent else ""
 
+    def provider_for(self, slug: str) -> str:
+        agent = self._by_slug.get(slug)
+        return (agent.provider or "") if agent else ""
+
+    def base_url_for(self, slug: str) -> str:
+        agent = self._by_slug.get(slug)
+        return (agent.base_url or "") if agent else ""
+
+    def api_key_for(self, slug: str) -> str:
+        """Decrypted per-agent LLM API key (internal use only)."""
+        agent = self._by_slug.get(slug)
+        return decrypt(agent.api_key) if agent and agent.api_key else ""
+
     def token_for(self, slug: str) -> str:
         """Decrypted Telegram token for an agent (for internal use only)."""
         agent = self._by_slug.get(slug)
@@ -211,7 +224,10 @@ class Registry:
             "name": agent.name,
             "role": agent.role,
             "system_prompt": agent.system_prompt,
+            "provider": agent.provider,
             "model": agent.model,
+            "base_url": agent.base_url,
+            "has_api_key": bool(agent.api_key),  # never expose the key itself
             "telegram_username": agent.telegram_username,
             "has_token": bool(agent.telegram_token),  # never expose the token itself
             "enabled": agent.enabled,
@@ -253,7 +269,10 @@ class Registry:
                 name=data.get("name") or data["slug"],
                 role=data.get("role") or data["slug"],
                 system_prompt=data.get("system_prompt", ""),
+                provider=data.get("provider", ""),
                 model=data.get("model", ""),
+                api_key=encrypt(data.get("api_key", "")),
+                base_url=data.get("base_url", ""),
                 telegram_token=encrypt(data.get("telegram_token", "")),
                 telegram_username=data.get("telegram_username", ""),
                 folder_path=data.get("folder_path") or f"agents/{data['slug']}",
@@ -273,13 +292,15 @@ class Registry:
             agent = session.exec(select(Agent).where(Agent.slug == slug)).first()
             if not agent:
                 raise KeyError(slug)
-            for field in ("name", "role", "system_prompt", "model",
-                          "telegram_username", "enabled"):
+            for field in ("name", "role", "system_prompt", "provider", "model",
+                          "base_url", "telegram_username", "enabled"):
                 if field in data and data[field] is not None:
                     setattr(agent, field, data[field])
-            # Token is encrypted at rest; only overwrite when a new one is sent.
+            # Secrets are encrypted at rest; only overwrite when a new one is sent.
             if data.get("telegram_token"):
                 agent.telegram_token = encrypt(data["telegram_token"])
+            if data.get("api_key"):
+                agent.api_key = encrypt(data["api_key"])
             agent.updated_at = datetime.utcnow()
             session.add(agent)
             session.commit()
