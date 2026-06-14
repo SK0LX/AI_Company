@@ -81,6 +81,12 @@
   Anthropic — переключаются через `LLM_PROVIDER`.
 - **Реестр агентов (v2):** SQLModel-таблицы в `data/app.sqlite` — единый источник
   правды по агентам; `prompts.py` остался источником сидов.
+- **Совместная работа (v2 этап 4):** задачи и их таймлайн, делегирование с
+  согласия, взаимопомощь и аудит — через `MessageBus` (`src/bus.py`) и
+  `src/collab.py`. Права энфорсятся на инструментах (`@requires`).
+- **Навыки (v2 этап 5):** переиспользуемые умения в `agents/<slug>/skills/<name>/`
+  (`skill.yaml` + `impl.py`); публикуются и перенимаются другими агентами,
+  становясь у них вызываемыми инструментами.
 
 ```
 src/
@@ -90,16 +96,23 @@ src/
 ├── graph/team_graph.py   # Оркестрация команды (LangGraph), узлы CEO/специалистов
 ├── agents/
 │   ├── prompts.py        # Системные промпты ролей (сиды для БД)
-│   └── tools.py          # Файловые инструменты, run_shell, run_python, вики
-├── db/                   # SQLModel: модели агентов + движок (v2)
+│   └── tools.py          # Файловые инструменты, run_shell, run_python, вики, @requires
+├── db/                   # SQLModel: модели агентов/задач/навыков + движок (v2)
 ├── registry.py           # Реестр агентов: чтение/запись/кэш (v2)
-├── web/                  # FastAPI админ-API + страница управления (v2)
+├── bus.py                # Внутренняя async-шина сообщений между агентами (v2)
+├── collab.py             # Задачи, делегирование-с-согласия, помощь (v2)
+├── agent_fs.py           # Стандарт папок агентов agents/<slug>/ (v2)
+├── skills.py             # Контракт навыка + загрузчик (v2)
+├── skill_registry.py     # Каталог навыков, adoption, semver (v2)
+├── web/                  # FastAPI: бот + админ-API + страница (один процесс, v2)
 ├── crypto.py             # Шифрование Telegram-токенов (Fernet, v2)
 ├── approvals.py          # Мост подтверждения команд (human-in-the-loop)
 ├── quota.py              # Учёт дневной квоты OpenRouter
 └── config.py             # Настройки (pydantic-settings, читает .env)
-main.py                   # Точка входа: запуск всех ботов (polling)
-run_admin.py              # Запуск админ-панели (127.0.0.1:8100)
+agents/<slug>/skills/     # Навыки агентов (отслеживаются в git)
+main.py                   # Точка входа: бот + админка в одном процессе (polling)
+run_admin.py              # Алиас на main.py
+tests/                    # Тесты без pytest/LLM: python tests/test_*.py
 docs/SPEC_v2.md           # ТЗ развития платформы
 ```
 
