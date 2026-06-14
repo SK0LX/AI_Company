@@ -904,6 +904,17 @@ async def _ceo_node(state: TeamState, config: Optional[RunnableConfig] = None) -
                 task_id = collab.create_task(title, created_by="ceo", owner="ceo")
             except Exception:  # noqa: BLE001 - tracking must never break a run
                 logger.exception("failed to create collab task")
+        # Record the CEO's reasoning as a "thought" — the Сознания stream.
+        if task_id is not None and (decision.reasoning or decision.user_note):
+            try:
+                collab.record_event(
+                    task_id, "ceo", "thought",
+                    text=(decision.reasoning or "").strip(),
+                    note=(decision.user_note or "").strip(),
+                    to=decision.role,
+                )
+            except Exception:  # noqa: BLE001
+                logger.exception("failed to record thought")
         return {
             "next_role": decision.role,
             "instruction": decision.instruction or "",

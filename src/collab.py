@@ -24,7 +24,7 @@ from sqlmodel import select
 
 from src import bus as busmod
 from src.db.engine import get_session
-from src.db.models import Delegation, HelpRequest, Message, Task, TaskEvent
+from src.db.models import AuditLog, Delegation, HelpRequest, Message, Task, TaskEvent
 from src.registry import registry
 
 logger = logging.getLogger(__name__)
@@ -366,6 +366,96 @@ def recent_messages(limit: int = 50) -> list[dict]:
             }
             for m in rows
         ]
+
+
+_EVENT_VERB = {
+    "created": "создал задачу",
+    "delegated": "делегировал",
+    "accepted": "принял",
+    "declined": "отклонил",
+    "result": "выдал результат",
+    "done": "завершил",
+    "status": "статус",
+    "help_requested": "просит помощь",
+    "help_assigned": "назначил помощника",
+    "help_resolved": "помог",
+    "thought": "размышляет",
+}
+
+
+def _describe_event(etype: str, payload: dict) -> str:
+    """Short human-readable line for a task event (for the activity feed)."""
+    p = payload or {}
+    if etype == "thought":
+        return (p.get("text") or p.get("note") or "").strip()
+    if etype == "created":
+        return p.get("title") or ""
+    if etype == "delegated":
+        to = p.get("to") or "?"
+        reason = (p.get("reason") or "").strip()
+        return f"→ {to}" + (f": {reason}" if reason else "")
+    if etype == "declined":
+        return (p.get("reason") or "").strip()
+    if etype == "result":
+        return f"{p.get('chars', 0)} симв."
+    if etype == "status":
+        return p.get("status") or ""
+    if etype in ("help_requested",):
+        return (p.get("summary") or "").strip()
+    if etype in ("help_assigned",):
+        return p.get("helper") or ""
+    return ""
+
+
+def activity_feed(category: str = "all", limit: int = 80) -> list[dict]:
+    """Unified, time-sorted activity stream for the dashboard.
+
+    Categories: ``tasks`` (task work), ``thoughts`` (agent reasoning / Сознания),
+    ``system`` (audit log), or ``all``. Each item: ts, category, actor, type,
+    task_id, text, verb."""
+    by_slug = _slug_by_id()
+    items: list[dict] = []
+    with get_session() as session:
+        if category in ("all", "tasks", "thoughts"):
+            rows = session.exec(
+                select(TaskEvent).order_by(TaskEvent.id.desc()).limit(limit * 3)
+            ).all()
+            for e in rows:
+                is_thought = e.type == "thought"
+                cat = "thoughts" if is_thought else "tasks"
+                if category == "tasks" and is_thought:
+                    continue
+                if category == "thoughts" and not is_thought:
+                    continue
+                payload = {}
+                try:
+                    payload = json.loads(e.payload_json or "{}")
+                except Exception:  # noqa: BLE001
+                    pass
+                items.append({
+                    "ts": e.ts.isoformat(),
+                    "category": cat,
+                    "actor": by_slug.get(e.actor_agent_id),
+                    "type": e.type,
+                    "verb": _EVENT_VERB.get(e.type, e.type),
+                    "task_id": e.task_id,
+                    "text": _describe_event(e.type, payload),
+                })
+        if category in ("all", "system"):
+            for a in session.exec(
+                select(AuditLog).order_by(AuditLog.id.desc()).limit(limit)
+            ).all():
+                items.append({
+                    "ts": a.ts.isoformat(),
+                    "category": "system",
+                    "actor": a.actor,
+                    "type": a.action,
+                    "verb": a.action,
+                    "task_id": None,
+                    "text": a.target,
+                })
+    items.sort(key=lambda x: x["ts"], reverse=True)
+    return items[:limit]
 
 
 def interaction_graph() -> dict:

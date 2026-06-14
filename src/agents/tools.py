@@ -74,6 +74,13 @@ def _audit(actor: str, action: str, target: str, **details: object) -> None:
                 )
             )
             session.commit()
+        try:
+            from src.events import hub
+
+            hub.publish({"event": "audit", "actor": actor or "system",
+                         "action": action, "target": target})
+        except Exception:  # noqa: BLE001
+            pass
     except Exception:  # noqa: BLE001 - auditing must never break a tool call
         logger.exception("failed to write audit log (%s/%s)", action, target)
 

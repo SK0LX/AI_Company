@@ -235,6 +235,15 @@ def interaction_graph() -> dict:
     return collab.interaction_graph()
 
 
+@app.get("/api/activity")
+def activity_feed(category: str = "all", limit: int = 80) -> list[dict]:
+    from src import collab
+
+    if category not in ("all", "tasks", "thoughts", "system"):
+        category = "all"
+    return collab.activity_feed(category, limit=max(1, min(limit, 300)))
+
+
 @app.get("/api/proactive")
 def proactive_status() -> dict:
     from src.config import settings

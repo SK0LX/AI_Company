@@ -224,5 +224,11 @@ def _audit(actor: str, action: str, target: str, **details: object) -> None:
                 )
             )
             session.commit()
+        try:
+            from src.events import hub
+
+            hub.publish({"event": "audit", "actor": actor, "action": action, "target": target})
+        except Exception:  # noqa: BLE001
+            pass
     except Exception:  # noqa: BLE001
         logger.exception("failed to audit %s", action)
