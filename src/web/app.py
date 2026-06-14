@@ -113,6 +113,80 @@ async def delete_agent(slug: str) -> None:
     await manager.reconcile_now()  # stop its personal bot at once
 
 
+# --- skills (stage 5) -------------------------------------------------------
+
+class SkillLink(BaseModel):
+    enabled: Optional[bool] = None
+
+
+@app.get("/api/skills")
+def list_skills() -> list[dict]:
+    from src import skill_registry
+
+    return skill_registry.list_skills()
+
+
+@app.get("/api/skills/catalog")
+def skills_catalog(exclude: Optional[str] = None) -> list[dict]:
+    from src import skill_registry
+
+    return skill_registry.public_catalog(exclude_owner=exclude)
+
+
+@app.post("/api/skills/discover")
+def discover_skills() -> dict:
+    from src.agent_fs import scaffold_all
+    from src.skills import skill_loader
+
+    scaffold_all()
+    return {"discovered": len(skill_loader.discover())}
+
+
+@app.get("/api/agents/{slug}/skills")
+def agent_skills(slug: str) -> list[dict]:
+    from src import skill_registry
+
+    if not registry.get(slug):
+        raise HTTPException(404, f"agent '{slug}' not found")
+    return skill_registry.agent_skills(slug)
+
+
+@app.post("/api/agents/{slug}/skills/{skill_id}/adopt", status_code=201)
+def adopt_skill(slug: str, skill_id: int) -> dict:
+    from src import skill_registry
+
+    try:
+        return skill_registry.adopt_skill(slug, skill_id)
+    except KeyError as exc:
+        raise HTTPException(404, str(exc))
+    except ValueError as exc:
+        raise HTTPException(409, str(exc))
+
+
+@app.patch("/api/agents/{slug}/skills/{skill_id}")
+def update_agent_skill(slug: str, skill_id: int, payload: SkillLink) -> dict:
+    from src import skill_registry
+
+    if payload.enabled is not None:
+        try:
+            skill_registry.set_enabled(slug, skill_id, payload.enabled)
+        except KeyError as exc:
+            raise HTTPException(404, str(exc))
+    return {"slug": slug, "skill_id": skill_id, "enabled": payload.enabled}
+
+
+@app.delete("/api/agents/{slug}/skills/{skill_id}", status_code=204)
+def drop_skill(slug: str, skill_id: int) -> None:
+    from src import skill_registry
+
+    try:
+        skill_registry.drop_skill(slug, skill_id)
+    except KeyError as exc:
+        raise HTTPException(404, str(exc))
+    except ValueError as exc:
+        raise HTTPException(409, str(exc))
+
+
 # --- static page ------------------------------------------------------------
 
 @app.get("/")
