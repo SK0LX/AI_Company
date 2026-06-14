@@ -491,10 +491,14 @@ def _tool_agent(role: str):
     from src.agents.tools import (
         delete_file,
         list_files,
+        list_memory,
         move_file,
         read_file,
+        read_memory,
         run_python,
         run_shell,
+        save_memory,
+        search_memory,
         write_file,
     )
 
@@ -507,6 +511,21 @@ def _tool_agent(role: str):
         base_prompt += (
             f"\n\nYou also have these reusable SKILLS as tools: {names}. Use them "
             "when relevant instead of redoing the work by hand."
+        )
+    # Shared team memory (the Obsidian knowledge base) — read before, write during.
+    memory_tools = (
+        [search_memory, read_memory, list_memory, save_memory]
+        if settings.enable_wiki
+        else []
+    )
+    if memory_tools:
+        base_prompt += (
+            "\n\nYou share a TEAM MEMORY (an Obsidian knowledge base). BEFORE you "
+            "start, call search_memory / list_memory to reuse what the team already "
+            "knows, and read_memory for the details. AS YOU WORK, call save_memory "
+            "to record durable knowledge — what you built and HOW it works, key "
+            "decisions and WHY, the file map (path — purpose), setup/run/test steps, "
+            "and gotchas — so teammates and future runs can read it."
         )
     can_shell = settings.enable_shell_execution and _perm(role, "can_run_shell")
     shell_note = (
@@ -521,7 +540,7 @@ def _tool_agent(role: str):
     )
 
     if role == "tester":
-        tools: list = [list_files, read_file, write_file] + skill_tools
+        tools: list = [list_files, read_file, write_file] + skill_tools + memory_tools
         if can_shell:
             tools.append(run_shell)
         extra = (
@@ -534,7 +553,7 @@ def _tool_agent(role: str):
         return create_react_agent(model, tools=tools, prompt=base_prompt + extra)
 
     if role in _CODE_REVIEW_ROLES:
-        tools = [list_files, read_file, write_file] + skill_tools
+        tools = [list_files, read_file, write_file] + skill_tools + memory_tools
         extra = (
             "\n\nYou are reviewing code that is ALREADY saved in this project's "
             "folder. First call list_files, then read_file on the files in your "
@@ -557,7 +576,8 @@ def _tool_agent(role: str):
         return create_react_agent(model, tools=tools, prompt=base_prompt + extra)
 
     if role == "reviewer":
-        tools = [list_files, read_file, write_file, move_file, delete_file] + skill_tools
+        tools = ([list_files, read_file, write_file, move_file, delete_file]
+                 + skill_tools + memory_tools)
         extra = (
             "\n\nYou are reviewing an EXISTING project that is ALREADY on disk in "
             "this project's folder. First call list_files to see everything that "
@@ -574,7 +594,7 @@ def _tool_agent(role: str):
         return create_react_agent(model, tools=tools, prompt=base_prompt + extra)
 
     # Default: builders (developer/frontend) and custom agents with file perms.
-    tools = [write_file, read_file, list_files] + skill_tools
+    tools = [write_file, read_file, list_files] + skill_tools + memory_tools
     extra = (
         "\n\nYou have a real filesystem workspace and you are ALREADY inside this "
         "project's folder. Use write_file to SAVE every file you produce, with "
@@ -721,7 +741,9 @@ async def _update_wiki_card(
     findings: list[str],
     answer: str,
 ) -> None:
-    """Write/update a concise project card in the wiki after a task finishes.
+    """Write/update the project's KNOWLEDGE NOTE in the shared memory after a task
+    finishes — the team's durable record of WHAT was built and HOW it works, so a
+    teammate (or a future run) can later read and understand it.
 
     Best-effort and English (the team's working language). Never raises."""
     if not settings.enable_wiki or not project_dir or not findings:
@@ -733,16 +755,30 @@ async def _update_wiki_card(
             existing = "(none yet)"
         prompt = HumanMessage(
             content=(
-                "Update the team's wiki card for this project. Output ONLY the "
-                "full Markdown note (no preamble). Keep it concise. Use this "
-                "structure:\n"
-                f"# {slug}\n\n## Summary\n(1-3 sentences)\n\n## Key decisions\n"
-                "(bullets)\n\n## Structure / files\n(bullets of the main files "
-                "and folders)\n\n## Status\n(one line)\n\n"
-                f"Existing card:\n{existing}\n\n"
-                f"User request:\n{_last_user_text(messages)}\n\n"
-                f"Specialist results:\n{_findings_block(findings)}\n\n"
-                f"Final answer delivered to the user:\n{answer}"
+                "You are the team's archivist. Update the project's KNOWLEDGE NOTE "
+                "in our shared memory (an Obsidian vault) so a teammate who has "
+                "never seen this project can later read it and understand WHAT it is "
+                "and HOW it works. MERGE new facts into the existing note (keep "
+                "still-true details, correct outdated ones, don't lose history). Be "
+                "concise but COMPLETE — this is long-term memory, not a status "
+                "update. Ground every claim in the specialist results / files that "
+                "were actually produced; do not invent. Output ONLY the full "
+                "Markdown note (no preamble), with this structure:\n\n"
+                f"# {slug}\n\n"
+                "## Summary\n(1-3 sentences: what this project is and who it's for)\n\n"
+                "## How it works\n(the architecture and main flow — how the parts "
+                "fit together end to end, in a few short paragraphs or bullets)\n\n"
+                "## Key decisions\n(bullets: decision — why it was made; include "
+                "tech/stack/library choices and trade-offs)\n\n"
+                "## Structure / files\n(bullets: path — what it does, for the main "
+                "files and folders actually on disk)\n\n"
+                "## How to run\n(setup / build / run / test commands, if any)\n\n"
+                "## Gotchas & TODO\n(pitfalls, known issues, and what's left to do)\n\n"
+                "## Status\n(one line: current state)\n\n"
+                f"--- Existing note ---\n{existing}\n\n"
+                f"--- User request ---\n{_last_user_text(messages)}\n\n"
+                f"--- Specialist results ---\n{_findings_block(findings)}\n\n"
+                f"--- Final answer delivered to the user ---\n{answer}"
             )
         )
         resp = await _retry(_specialist_model()).ainvoke([prompt])
@@ -1242,9 +1278,14 @@ async def arun_specialist(role: str, text: str, project: str = "") -> str:
         reply += f"\n\n[Files actually on disk in the project folder now]\n{listing}"
         return reply
 
+    # Non-tool specialists (analysts/designer) can't call tools, so prime them
+    # with relevant shared memory read-only — they still benefit from what the
+    # team already knows.
     prompt = registry.prompt(role)
+    memory = _wiki_context(text)
+    system_text = f"{prompt}\n\n{memory}" if memory else prompt
     response = await _retry(_specialist_model(role)).ainvoke(
-        [SystemMessage(content=prompt), HumanMessage(content=text)]
+        [SystemMessage(content=system_text), HumanMessage(content=text)]
     )
     return _content_to_text(response.content) or "..."
 

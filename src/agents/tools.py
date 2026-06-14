@@ -396,6 +396,47 @@ def wiki_index(max_notes: int = 30) -> str:
     return "\n".join(entries)
 
 
+# --- shared team memory (the Obsidian vault) exposed as agent tools ----------
+#
+# Every agent reads from and writes to ONE shared knowledge base, so the team
+# accumulates and reuses what it learns across tasks. These thin @tool wrappers
+# let agents call the vault during a run (the plain functions above are used by
+# the orchestrator for priming/the end-of-task note).
+
+@tool
+def search_memory(query: str) -> str:
+    """Search the team's SHARED long-term memory — an Obsidian Markdown vault of
+    past projects, architecture, decisions and how-tos. Call this BEFORE starting
+    work to reuse what the team already knows. Returns matching notes + snippets."""
+    return wiki_search_notes(query)
+
+
+@tool
+def read_memory(path: str) -> str:
+    """Read a full note from the team's shared memory by path (e.g.
+    'projects/coffee-shop' or 'decisions/auth'). Use after search_memory to get
+    the details of a relevant note."""
+    return wiki_read_note(path)
+
+
+@tool
+def list_memory() -> str:
+    """List every note in the team's shared memory (path + title) so you can see
+    what knowledge already exists before adding more."""
+    return wiki_index()
+
+
+@tool
+def save_memory(path: str, content: str) -> str:
+    """Save or update a Markdown note in the team's SHARED memory so the whole
+    team — now and in the future — can reuse it. Record DURABLE knowledge: what a
+    thing is and HOW it works, key decisions and WHY, the file/folder map (path —
+    purpose), setup/run/test steps, and gotchas. `path` is a slug like
+    'decisions/db-choice' or 'projects/<name>'; it overwrites the note there.
+    Prefer updating an existing note (read it first) over creating duplicates."""
+    return wiki_write_note(path, content)
+
+
 @tool
 @requires("can_run_shell")
 async def run_shell(command: str) -> str:
