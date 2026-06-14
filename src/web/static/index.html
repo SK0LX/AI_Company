@@ -203,6 +203,20 @@
         <div class="field"><label>Модель (пусто = дефолт провайдера)</label>
           <input type="text" id="f_model" placeholder=""></div>
       </div>
+      <div class="grid2">
+        <div class="field"><label>Провайдер LLM</label>
+          <select id="f_provider">
+            <option value="">(глобальный по умолчанию)</option>
+            <option value="openrouter">OpenRouter</option>
+            <option value="anthropic">Claude API (Anthropic)</option>
+            <option value="google">Google Gemini</option>
+            <option value="openai_compatible">Другой (OpenAI-совместимый)</option>
+          </select></div>
+        <div class="field"><label>Base URL (для «другого» провайдера)</label>
+          <input type="text" id="f_base_url" placeholder="https://api.groq.com/openai/v1"></div>
+      </div>
+      <div class="field"><label>API-ключ агента (опц.; пусто = глобальный ключ провайдера)</label>
+        <input type="text" id="f_api_key" placeholder=""></div>
       <div class="field"><label>Системный промпт</label>
         <textarea id="f_prompt" placeholder="You are a senior ..."></textarea></div>
       <div class="field"><label>Обязанности (одной строкой)</label>
@@ -534,6 +548,11 @@ async function openForm(slug) {
     const a = await (await fetch(`${API}/${slug}`)).json();
     $('f_slug').value = a.slug; $('f_name').value = a.name; $('f_role').value = a.role;
     $('f_model').value = a.model || ''; $('f_prompt').value = a.system_prompt || '';
+    $('f_provider').value = a.provider || ''; $('f_base_url').value = a.base_url || '';
+    $('f_api_key').value = '';
+    $('f_api_key').placeholder = a.has_api_key
+      ? 'ключ задан — оставьте пустым, чтобы не менять'
+      : 'пусто = глобальный ключ провайдера';
     $('f_obligation').value = a.obligation || ''; $('f_tg_user').value = a.telegram_username || '';
     $('f_tg_token').value = '';
     $('f_tg_token').placeholder = a.has_token
@@ -542,8 +561,10 @@ async function openForm(slug) {
     $('f_enabled').checked = !!a.enabled;
     setPerms(a.permissions);
   } else {
-    ['f_slug','f_name','f_role','f_model','f_prompt','f_obligation','f_delegate','f_tg_user','f_tg_token']
+    ['f_slug','f_name','f_role','f_model','f_provider','f_base_url','f_api_key','f_prompt',
+     'f_obligation','f_delegate','f_tg_user','f_tg_token']
       .forEach(id => $(id).value = '');
+    $('f_api_key').placeholder = 'пусто = глобальный ключ провайдера';
     $('f_enabled').checked = true; setPerms({});
   }
   $('overlay').classList.add('open');
@@ -553,12 +574,15 @@ async function onSave() {
   const body = {
     slug: $('f_slug').value.trim(), name: $('f_name').value.trim(),
     role: $('f_role').value.trim(), model: $('f_model').value.trim(),
+    provider: $('f_provider').value, base_url: $('f_base_url').value.trim(),
     system_prompt: $('f_prompt').value, obligation: $('f_obligation').value.trim(),
     telegram_username: $('f_tg_user').value.trim(), enabled: $('f_enabled').checked,
     permissions: collectPerms(),
   };
   const token = $('f_tg_token').value.trim();
   if (token) body.telegram_token = token;
+  const apiKey = $('f_api_key').value.trim();
+  if (apiKey) body.api_key = apiKey;
   let res;
   if (editingSlug) {
     res = await fetch(`${API}/${editingSlug}`, {method:'PATCH', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});

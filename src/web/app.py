@@ -67,7 +67,10 @@ class AgentIn(BaseModel):
     name: Optional[str] = None
     role: Optional[str] = None
     system_prompt: Optional[str] = None
+    provider: Optional[str] = None
     model: Optional[str] = None
+    api_key: Optional[str] = None
+    base_url: Optional[str] = None
     telegram_token: Optional[str] = None
     telegram_username: Optional[str] = None
     enabled: Optional[bool] = None

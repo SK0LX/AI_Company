@@ -77,8 +77,11 @@
 - **Специалисты** — ReAct-агенты с файловыми инструментами
   (`write_file` / `read_file` / `list_files` / `move_file` / `delete_file`) и
   `run_shell` / `run_python`.
-- **Провайдеры LLM:** OpenRouter (бесплатные модели по умолчанию), Google Gemini,
-  Anthropic — переключаются через `LLM_PROVIDER`.
+- **Провайдеры LLM (на агента):** глобальный `LLM_PROVIDER` (OpenRouter по
+  умолчанию), но **каждый агент** в админке может задать свой провайдер, модель,
+  API-ключ и base URL: **OpenRouter**, **Claude API (Anthropic)**, **Google
+  Gemini** или **любой OpenAI-совместимый** эндпоинт (Groq, Together, vLLM,
+  локальный). Ключи агентов шифруются.
 - **Реестр агентов (v2):** SQLModel-таблицы в `data/app.sqlite` — единый источник
   правды по агентам; `prompts.py` остался источником сидов.
 - **Совместная работа (v2 этап 4):** задачи и их таймлайн, делегирование с
