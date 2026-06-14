@@ -313,6 +313,51 @@ async def _pick_helper(requester: str, summary: str, candidates: list[str]) -> O
     return None
 
 
+def _skill_tools_for(role: str) -> list:
+    """Build a langchain tool per enabled skill the agent has (owned + adopted),
+    so a specialist can call its skills like any other tool. Each tool wraps
+    ``run_skill(owner, name, **params)``. Best-effort: never raises."""
+    from langchain_core.tools import StructuredTool
+    from pydantic import create_model
+
+    from src import skill_registry
+    from src.skills import run_skill
+
+    tools: list = []
+    try:
+        skills = skill_registry.enabled_skills_for(role)
+    except Exception:  # noqa: BLE001
+        logger.exception("failed to list skills for %s", role)
+        return tools
+
+    for skill in skills:
+        owner, name = skill["owner"], skill["name"]
+        params = skill.get("params") or {}
+        try:
+            fields = {p: (str, Field(default="", description=str(d))) for p, d in params.items()}
+            args_model = create_model(f"skill_{name}_args", **fields) if fields else None
+
+            def _make(owner: str, name: str):
+                def _call(**kwargs) -> str:
+                    res = run_skill(owner, name, **{k: v for k, v in kwargs.items() if v != ""})
+                    return res.output or ("[ok]" if res.ok else "[skill failed]")
+
+                return _call
+
+            origin = "" if skill.get("owned") else f" (adopted from {skill.get('adopted_from')})"
+            tools.append(
+                StructuredTool.from_function(
+                    func=_make(owner, name),
+                    name=f"skill_{name}",
+                    description=(skill.get("description") or name) + origin,
+                    args_schema=args_model,
+                )
+            )
+        except Exception:  # noqa: BLE001 - one bad skill must not block the agent
+            logger.exception("failed to build tool for skill %s/%s", owner, name)
+    return tools
+
+
 def _mark_task_done(state: TeamState) -> None:
     """Close out the collab task tracking this request (best-effort)."""
     task_id = state.get("task_id")
@@ -455,6 +500,14 @@ def _tool_agent(role: str):
 
     base_prompt = registry.prompt(role)
     model = _specialist_model(role)
+    # Reusable skills (owned + adopted) become tools alongside the file/shell ones.
+    skill_tools = _skill_tools_for(role)
+    if skill_tools:
+        names = ", ".join(t.name for t in skill_tools)
+        base_prompt += (
+            f"\n\nYou also have these reusable SKILLS as tools: {names}. Use them "
+            "when relevant instead of redoing the work by hand."
+        )
     can_shell = settings.enable_shell_execution and _perm(role, "can_run_shell")
     shell_note = (
         "\n\nYou can run REAL commands with run_shell in the project folder "
@@ -468,7 +521,7 @@ def _tool_agent(role: str):
     )
 
     if role == "tester":
-        tools: list = [list_files, read_file, write_file]
+        tools: list = [list_files, read_file, write_file] + skill_tools
         if can_shell:
             tools.append(run_shell)
         extra = (
@@ -481,7 +534,7 @@ def _tool_agent(role: str):
         return create_react_agent(model, tools=tools, prompt=base_prompt + extra)
 
     if role in _CODE_REVIEW_ROLES:
-        tools = [list_files, read_file, write_file]
+        tools = [list_files, read_file, write_file] + skill_tools
         extra = (
             "\n\nYou are reviewing code that is ALREADY saved in this project's "
             "folder. First call list_files, then read_file on the files in your "
@@ -504,7 +557,7 @@ def _tool_agent(role: str):
         return create_react_agent(model, tools=tools, prompt=base_prompt + extra)
 
     if role == "reviewer":
-        tools = [list_files, read_file, write_file, move_file, delete_file]
+        tools = [list_files, read_file, write_file, move_file, delete_file] + skill_tools
         extra = (
             "\n\nYou are reviewing an EXISTING project that is ALREADY on disk in "
             "this project's folder. First call list_files to see everything that "
@@ -521,7 +574,7 @@ def _tool_agent(role: str):
         return create_react_agent(model, tools=tools, prompt=base_prompt + extra)
 
     # Default: builders (developer/frontend) and custom agents with file perms.
-    tools = [write_file, read_file, list_files]
+    tools = [write_file, read_file, list_files] + skill_tools
     extra = (
         "\n\nYou have a real filesystem workspace and you are ALREADY inside this "
         "project's folder. Use write_file to SAVE every file you produce, with "
