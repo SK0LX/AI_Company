@@ -2,8 +2,9 @@
 <html lang="ru">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <title>AI IT Company — Админка</title>
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
   <style>
     :root { --bg:#0f1115; --panel:#181b22; --line:#2a2f3a; --text:#e6e8ec;
             --muted:#9aa3b2; --accent:#4f8cff; --danger:#ff5c5c; --ok:#3ecf8e; --warn:#f0b429; }
@@ -101,6 +102,20 @@
     .onode-init { fill:#fff; font-size:15px; font-weight:700; }
     .oedge { stroke:#4a5570; }
     @media (max-width:860px) { .office { flex-direction:column; } .office-side { max-width:none; } }
+    /* mobile / Telegram Mini App */
+    @media (max-width:760px) {
+      header { flex-wrap:wrap; gap:10px; padding:12px 14px; }
+      h1 { font-size:16px; }
+      main { padding:14px; }
+      .tabs { flex-wrap:wrap; }
+      .board { grid-template-columns:none; grid-auto-flow:column; grid-auto-columns:80%;
+               overflow-x:auto; -webkit-overflow-scrolling:touch; padding-bottom:6px; }
+      .modal { width:100%; padding:16px; }
+    }
+    /* read-only in the Telegram Mini App (no destructive actions on mobile) */
+    body.tg #addBtn, body.tg .row-actions { display:none !important; }
+    body.tg { padding-top:env(safe-area-inset-top); }
+    #lock .modal { width:340px; text-align:center; }
   </style>
 </head>
 <body>
@@ -227,6 +242,15 @@
       <div class="muted" id="tlMeta" style="margin-bottom:12px"></div>
       <ul class="tl" id="tlList"></ul>
       <div class="modal-actions"><span></span><button onclick="closeDrawer()">Закрыть</button></div>
+    </div>
+  </div>
+
+  <!-- Telegram Mini App access lock -->
+  <div class="overlay" id="lock" style="align-items:center">
+    <div class="modal">
+      <div style="font-size:42px">🔒</div>
+      <h2 style="margin:10px 0 6px">Доступ закрыт</h2>
+      <div class="muted" id="lockMsg"></div>
     </div>
   </div>
 
@@ -554,8 +578,35 @@ async function quickDelete(slug) {
   await fetch(`${API}/${slug}`, {method:'DELETE'}); load();
 }
 
+// ---- Telegram Mini App integration -----------------------------------------
+function applyTgTheme(TG) {
+  const p = TG.themeParams || {}; const root = document.documentElement.style;
+  if (p.bg_color) root.setProperty('--bg', p.bg_color);
+  if (p.secondary_bg_color) root.setProperty('--panel', p.secondary_bg_color);
+  if (p.text_color) root.setProperty('--text', p.text_color);
+  if (p.hint_color) root.setProperty('--muted', p.hint_color);
+  if (p.button_color) root.setProperty('--accent', p.button_color);
+}
+function showLock(msg) {
+  $('lockMsg').textContent = msg || 'Нет доступа';
+  $('lock').classList.add('open');
+}
+function initTelegram() {
+  const TG = window.Telegram && window.Telegram.WebApp;
+  if (!TG || !TG.initData) return;          // normal browser — nothing to do
+  document.body.classList.add('tg');
+  try { TG.ready(); TG.expand(); } catch (e) {}
+  applyTgTheme(TG);
+  showView('office');                       // open the office map by default
+  fetch('/api/tg/auth', {method:'POST', headers:{'Content-Type':'application/json'},
+                         body: JSON.stringify({init_data: TG.initData})})
+    .then(async r => { if (!r.ok) { const e = await r.json().catch(()=>({})); throw new Error(e.detail || 'Нет доступа'); } })
+    .catch(err => showLock(err.message));
+}
+
 load();
 connectWS();
+initTelegram();
 </script>
 </body>
 </html>
