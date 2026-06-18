@@ -58,6 +58,24 @@ def main() -> None:
 
     assert registry.get(SLUG) is None
     assert len(registry.list_agents()) == n_before
+
+    # guards for unknown slugs return safe empties (no crash)
+    assert registry.permissions("nope_zzz") == {}
+    assert registry.obligation("nope_zzz") == ""
+    assert registry.prompt("nope_zzz") == ""
+    assert registry.model_for("nope_zzz") == ""
+    assert registry.provider_for("nope_zzz") == ""
+    assert registry.api_key_for("nope_zzz") == ""
+    assert registry.token_for("nope_zzz") == ""
+    assert registry.label("nope_zzz") == "nope_zzz"
+    assert registry.as_dict("nope_zzz") is None
+
+    # roster accessors used to build the CEO prompt
+    assert registry.ceo_prompt()
+    block = registry.roster_block()
+    assert "developer" in block and "ceo" not in block.split("\n", 1)[1]
+    assert "developer" in registry.specialist_slugs()
+
     print("registry tests: OK")
 
 

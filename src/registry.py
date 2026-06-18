@@ -313,6 +313,8 @@ class Registry:
         return self._by_slug[slug]
 
     def delete_agent(self, slug: str) -> None:
+        from src.db.models import AgentSkill, Skill
+
         with get_session() as session:
             agent = session.exec(select(Agent).where(Agent.slug == slug)).first()
             if not agent:
@@ -325,6 +327,22 @@ class Registry:
                 select(AgentObligation).where(AgentObligation.agent_id == agent.id)
             ).all():
                 session.delete(row)
+            # Skill links for this agent + skills it owns (and links to those) —
+            # otherwise a reused rowid would inherit an orphaned skill.
+            owned = [s.id for s in session.exec(
+                select(Skill).where(Skill.owner_agent_id == agent.id)
+            ).all()]
+            for row in session.exec(
+                select(AgentSkill).where(
+                    (AgentSkill.agent_id == agent.id)
+                    | (AgentSkill.skill_id.in_(owned) if owned else False)
+                )
+            ).all():
+                session.delete(row)
+            for sid in owned:
+                obj = session.get(Skill, sid)
+                if obj:
+                    session.delete(obj)
             session.delete(agent)
             session.commit()
         self.reload()

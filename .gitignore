@@ -26,3 +26,8 @@ agents/*/manifest.yaml
 agents/*/prompt.md
 # Scratch agent folders created by tests (slugs start with "_").
 agents/_*/
+
+# Coverage
+.coverage
+.coverage.*
+htmlcov/

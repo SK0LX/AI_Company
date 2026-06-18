@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import signal
 from collections import defaultdict, deque
 
@@ -62,24 +63,51 @@ class TelegramManager:
             chat = update.effective_chat
             if not msg or not msg.text or not chat:
                 return
-            # Personal bots answer in private chats only (keep groups for the team).
-            if chat.type != "private":
-                return
+
+            text = msg.text
+            is_private = chat.type == "private"
+            if not is_private:
+                # In a group the agent answers ONLY when addressed: an @mention
+                # of its bot, or a reply to one of its own messages. Otherwise it
+                # would respond to every message (and spam the chat).
+                uname = (context.bot.username or "").lower()
+                mentioned = bool(uname) and f"@{uname}" in text.lower()
+                replied = bool(
+                    msg.reply_to_message
+                    and msg.reply_to_message.from_user
+                    and msg.reply_to_message.from_user.id == context.bot.id
+                )
+                if not (mentioned or replied):
+                    return
+                if mentioned:  # drop its own @handle from the prompt
+                    text = re.sub(rf"(?i)@{re.escape(uname)}", "", text).strip()
+                text = text or "?"
+
             await chat.send_action(ChatAction.TYPING)
             registry.reload()
             key = (slug, chat.id)
             history = list(self._history[key])
+            # In a group, tell the agent WHO is speaking so it can address the
+            # two real users by name.
+            speaker = ""
+            if not is_private and msg.from_user:
+                speaker = msg.from_user.first_name or msg.from_user.username or ""
+            user_text = f"{speaker}: {text}" if speaker else text
             try:
-                reply = await aagent_reply(slug, msg.text, history)
+                reply = await aagent_reply(slug, user_text, history)
             except Exception:  # noqa: BLE001
-                logger.exception("agent DM failed for %s", slug)
+                logger.exception("agent reply failed for %s", slug)
                 await context.bot.send_message(
                     chat_id=chat.id, text="⚠️ Что-то пошло не так. Попробуй ещё раз."
                 )
                 return
-            self._history[key].append(("user", msg.text))
+            self._history[key].append(("user", user_text))
             self._history[key].append(("agent", reply))
-            await context.bot.send_message(chat_id=chat.id, text=reply)
+            await context.bot.send_message(
+                chat_id=chat.id,
+                text=reply,
+                reply_to_message_id=None if is_private else msg.message_id,
+            )
 
         async def on_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             chat = update.effective_chat
