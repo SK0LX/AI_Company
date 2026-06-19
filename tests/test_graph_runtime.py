@@ -16,7 +16,6 @@ from _client import app_client  # noqa: F401  (ensures src on path / consistent 
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.config import DEFAULT_MODELS
 from src.graph import team_graph as tg
 from src.registry import registry
 
@@ -47,11 +46,14 @@ def _run_registry() -> None:
 
 def _spec_resolution() -> None:
     registry.setup()
-    registry.create_agent({"slug": "_rt_ceo", "name": "Boss", "provider": "anthropic"})
+    # explicit per-agent provider + model -> used verbatim, independent of globals
+    registry.create_agent({
+        "slug": "_rt_ceo", "name": "Boss",
+        "provider": "anthropic", "model": "claude-haiku-4-5",
+    })
     try:
-        # CEO with a non-global provider + no explicit model -> provider default
         prov, model, _key, _url = tg._resolve_spec("_rt_ceo", is_ceo=True)
-        assert prov == "anthropic" and model == DEFAULT_MODELS["anthropic"]
+        assert prov == "anthropic" and model == "claude-haiku-4-5"
         # an agent with no skills yields no skill tools
         assert tg._skill_tools_for("_rt_ceo") == []
     finally:

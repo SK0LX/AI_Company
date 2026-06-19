@@ -64,9 +64,15 @@ async def main() -> None:
     c = await svc2.handle(_event("help_requested", task_id=3, summary="z"))
     assert a and b and c is None  # third one over the limit of 2
 
-    # 5) an agent WITHOUT the permission stays silent
-    none = await svc2.handle(_event("done", actor="designer", task_id=9))
-    assert none is None
+    # 5) an agent WITHOUT the proactive permission stays silent. Use a throwaway
+    #    agent created without it (real seed agents may have it granted in this DB).
+    registry.create_agent({"slug": "_pp_silent", "name": "Silent", "permissions": {}})
+    registry.reload()
+    try:
+        none = await svc2.handle(_event("done", actor="_pp_silent", task_id=9))
+        assert none is None
+    finally:
+        registry.delete_agent("_pp_silent")
 
     # 6) mute() silences everything
     svc3 = P.ProactiveService(sender)

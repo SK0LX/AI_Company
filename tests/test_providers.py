@@ -57,7 +57,7 @@ def main() -> None:
                              "https://api.groq.com/openai/v1")
         assert type(m_groq).__name__ == "ChatOpenAI"
 
-        m_or = _make_model("openrouter", "openai/gpt-oss-120b:free", "", "")
+        m_or = _make_model("openrouter", "openai/gpt-oss-120b:free", "or-test-key", "")
         assert type(m_or).__name__ == "ChatOpenAI"
 
         print("provider tests: OK")

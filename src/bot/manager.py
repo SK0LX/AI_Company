@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import re
 import signal
 from collections import defaultdict, deque
 
@@ -52,6 +51,12 @@ class TelegramManager:
         self._team_app: Application | None = None
         self._reconcile_task: asyncio.Task | None = None
         self._stop: asyncio.Event | None = None
+        # Group-chat presence: ids of OUR bots (so their posts don't trigger us),
+        # dedup of processed messages (one message reaches all bots), per-chat lock.
+        self._bot_ids: set[int] = set()
+        self._seen_msgs: deque = deque(maxlen=400)
+        self._group_locks: dict[int, asyncio.Lock] = {}
+        self._group_pending: dict[int, str] = {}  # newest human msg seen during a burst
 
     # --- per-agent personal bot --------------------------------------------
 
@@ -63,51 +68,27 @@ class TelegramManager:
             chat = update.effective_chat
             if not msg or not msg.text or not chat:
                 return
-
-            text = msg.text
-            is_private = chat.type == "private"
-            if not is_private:
-                # In a group the agent answers ONLY when addressed: an @mention
-                # of its bot, or a reply to one of its own messages. Otherwise it
-                # would respond to every message (and spam the chat).
-                uname = (context.bot.username or "").lower()
-                mentioned = bool(uname) and f"@{uname}" in text.lower()
-                replied = bool(
-                    msg.reply_to_message
-                    and msg.reply_to_message.from_user
-                    and msg.reply_to_message.from_user.id == context.bot.id
-                )
-                if not (mentioned or replied):
-                    return
-                if mentioned:  # drop its own @handle from the prompt
-                    text = re.sub(rf"(?i)@{re.escape(uname)}", "", text).strip()
-                text = text or "?"
+            # Group chats are handled centrally (one brain for all agent bots);
+            # private chats are this agent's own 1:1 conversation.
+            if chat.type != "private":
+                await self._handle_group(msg, chat)
+                return
 
             await chat.send_action(ChatAction.TYPING)
             registry.reload()
             key = (slug, chat.id)
             history = list(self._history[key])
-            # In a group, tell the agent WHO is speaking so it can address the
-            # two real users by name.
-            speaker = ""
-            if not is_private and msg.from_user:
-                speaker = msg.from_user.first_name or msg.from_user.username or ""
-            user_text = f"{speaker}: {text}" if speaker else text
             try:
-                reply = await aagent_reply(slug, user_text, history)
+                reply = await aagent_reply(slug, msg.text, history)
             except Exception:  # noqa: BLE001
-                logger.exception("agent reply failed for %s", slug)
+                logger.exception("agent DM failed for %s", slug)
                 await context.bot.send_message(
                     chat_id=chat.id, text="⚠️ Что-то пошло не так. Попробуй ещё раз."
                 )
                 return
-            self._history[key].append(("user", user_text))
+            self._history[key].append(("user", msg.text))
             self._history[key].append(("agent", reply))
-            await context.bot.send_message(
-                chat_id=chat.id,
-                text=reply,
-                reply_to_message_id=None if is_private else msg.message_id,
-            )
+            await context.bot.send_message(chat_id=chat.id, text=reply)
 
         async def on_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             chat = update.effective_chat
@@ -123,6 +104,119 @@ class TelegramManager:
         app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_dm))
         app.add_error_handler(on_error)
         return app
+
+    # --- group chat presence -----------------------------------------------
+
+    async def _handle_group(self, msg, chat) -> None:
+        """Central brain for a group chat shared by the agent bots + real people.
+
+        Every agent bot delivers the SAME group message, so we dedup by message id
+        and process it once. Our own bots' posts are recorded for context but never
+        trigger a turn — only HUMAN messages do, and the resulting turn-burst is
+        hard-capped, so an infinite agent↔agent loop is impossible by construction."""
+        from src import group_chat as gc
+        from src.config import settings as _s
+
+        if not _s.enable_group_chat:
+            return
+        key = (chat.id, msg.message_id)
+        if key in self._seen_msgs:
+            return
+        self._seen_msgs.append(key)
+
+        text = msg.text or ""
+        sender = msg.from_user
+        sender_name = (sender.first_name or sender.username or "user") if sender else "user"
+
+        # One of OUR bots talking (an agent or the team/CEO bot): record team/CEO
+        # posts for context; agent posts are already recorded via mark_post. Never
+        # let a bot message start a turn.
+        if sender and sender.id in self._bot_ids:
+            is_agent_bot = any(sender.id == app.bot.id for _t, app in self._agent_apps.values())
+            if not is_agent_bot:
+                gc.observe(chat.id, name=sender_name, text=text)
+            return
+
+        # Human message: record + run a bounded turn-burst. If a burst is already
+        # running for this chat, remember THIS message and let the running burst
+        # pick it up when it finishes (so an addressed message is never lost).
+        logger.info("group: received from %s in chat %s: %r", sender_name, chat.id, text[:60])
+        gc.observe(chat.id, name=sender_name, text=text)
+        lock = self._group_locks.setdefault(chat.id, asyncio.Lock())
+        if lock.locked():
+            self._group_pending[chat.id] = text
+            return
+        async with lock:
+            trigger: str | None = text
+            while trigger is not None:
+                await self._run_group_burst(chat, trigger)
+                # A human message that arrived during the burst (newest wins). This
+                # is human-driven, so it can't loop on its own (bot posts never set
+                # pending — they're filtered by _bot_ids and the message dedup).
+                trigger = self._group_pending.pop(chat.id, None)
+
+    async def _run_group_burst(self, chat, text: str) -> None:
+        """Fully-independent mode: EVERY present agent runs its OWN Claude call and
+        decides for itself whether to reply. Those who opt in post (a few may, or
+        none). A direct work request to one agent goes through the tool path."""
+        from src import group_chat as gc
+        from src.graph.team_graph import agroup_decide, agroup_reply
+
+        registry.reload()
+        present = [
+            s for s in list(self._agent_apps)
+            if registry.get(s) and registry.get(s).enabled
+        ]
+        if not present:
+            logger.info("group: no agent bots present — staying silent")
+            return
+        roster = [(s, registry.label(s), registry.get(s).role) for s in present]
+        transcript = gc.transcript_text(chat.id)
+
+        # A direct work request to ONE agent -> that agent actually does it (tools).
+        addressed = gc.detect_addressed(text, roster)
+        if addressed and addressed in self._agent_apps and gc.work_intent(text):
+            logger.info("group: work request -> %s", addressed)
+            reply = await agroup_reply(
+                addressed, transcript, work_intent=True, project=f"group-{chat.id}"
+            )
+            await self._group_post(chat, addressed, reply)
+            return
+
+        # Otherwise EVERY agent independently decides (its own model call, in parallel).
+        logger.info("group: %d agents independently deciding on %r", len(present), text[:60])
+        decisions = await asyncio.gather(
+            *[agroup_decide(s, transcript) for s in present], return_exceptions=True
+        )
+        responders = [
+            (s, d[1]) for s, d in zip(present, decisions)
+            if isinstance(d, tuple) and d[0] and d[1]
+        ]
+        logger.info("group: responders = %s", [s for s, _ in responders] or "(nobody)")
+        for i, (slug, reply) in enumerate(responders):
+            if i:
+                await asyncio.sleep(0.9)  # natural stagger so they don't land at once
+            await self._group_post(chat, slug, reply)
+
+    async def _group_post(self, chat, slug: str, reply: str) -> None:
+        """Send one agent's group message via its own bot (with dedup + echo guard)."""
+        from src import group_chat as gc
+
+        reply = (reply or "").strip()
+        if not reply or slug not in self._agent_apps or gc.is_duplicate(chat.id, reply):
+            return
+        bot = self._agent_apps[slug][1].bot
+        try:
+            await chat.send_action(ChatAction.TYPING)
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            sent = await bot.send_message(chat_id=chat.id, text=reply)
+            self._seen_msgs.append((chat.id, sent.message_id))  # ignore our own echo
+        except Exception:  # noqa: BLE001
+            logger.exception("group post failed for %s", slug)
+            return
+        gc.mark_post(chat.id, slug, registry.label(slug), reply)
 
     # --- lifecycle ----------------------------------------------------------
 
@@ -178,6 +272,10 @@ class TelegramManager:
                 if await self._start_app(slug, app):
                     self._agent_apps[slug] = (token, app)
                     await self._configure_webapp(slug, app)
+                    try:
+                        self._bot_ids.add(app.bot.id)
+                    except Exception:  # noqa: BLE001
+                        pass
 
     @staticmethod
     async def _configure_webapp(label: str, app: Application) -> None:
@@ -242,6 +340,10 @@ class TelegramManager:
             self._team_app = None
             return
         await self._configure_webapp("команда", self._team_app)
+        try:
+            self._bot_ids.add(self._team_app.bot.id)
+        except Exception:  # noqa: BLE001
+            pass
         await self._reconcile_agents()
         self._stop = asyncio.Event()
         self._reconcile_task = asyncio.create_task(self._reconcile_loop())
