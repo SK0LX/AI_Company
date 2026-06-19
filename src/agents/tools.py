@@ -44,10 +44,36 @@ _current_agent: contextvars.ContextVar[str] = contextvars.ContextVar(
     "current_agent", default=""
 )
 
+# Self-modification mode. When True, the file/shell tools operate on the app's
+# OWN source repository (so an agent can change the running bot itself) instead
+# of the sandboxed workspace. Off by default; the orchestrator flips it on only
+# for a self-editing agent, and only when settings.enable_self_modify is set.
+_self_edit: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "self_edit", default=False
+)
+
+# Optional explicit self-edit root (a git worktree). When set, the file/shell
+# tools operate there instead of the live repo, isolating self-modification.
+_self_edit_root: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "self_edit_root", default=""
+)
+
 
 def set_current_agent(slug: str) -> None:
     """Mark which agent is about to use the tools (for @requires + auditing)."""
     _current_agent.set(slug or "")
+
+
+def set_self_edit(on: bool, root: str = "") -> None:
+    """Point the file/shell tools at the app's OWN code (self-modification) for
+    the current async context. ``root`` optionally pins them to a specific
+    directory (e.g. an isolated git worktree) instead of the live repo root."""
+    _self_edit.set(bool(on))
+    _self_edit_root.set(root or "")
+
+
+def self_edit_on() -> bool:
+    return _self_edit.get()
 
 
 # --- permission enforcement (v2 stage 4) ------------------------------------
@@ -133,13 +159,59 @@ def set_project_subdir(name: str) -> None:
     _project_subdir.set(sanitize_project(name) if name else "")
 
 
+def _repo_root() -> str:
+    """The app's OWN source repository root (target of self-modification)."""
+    configured = (settings.self_repo_dir or "").strip()
+    if configured:
+        return os.path.abspath(os.path.expanduser(configured))
+    # Default: the checkout that contains this package (src/agents/tools.py).
+    return os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir, os.pardir))
+
+
 def _workspace_root() -> str:
+    # Self-edit mode swaps the sandbox root from the workspace to the real repo,
+    # so every existing file/shell tool transparently operates on the app's own
+    # code — still confined to that root by _safe_path.
+    if _self_edit.get():
+        override = _self_edit_root.get()
+        root = os.path.abspath(os.path.expanduser(override)) if override else _repo_root()
+        os.makedirs(root, exist_ok=True)
+        return root
     root = os.path.abspath(os.path.expanduser(settings.workspace_dir))
     sub = _project_subdir.get()
     if sub:
         root = os.path.join(root, sub)
     os.makedirs(root, exist_ok=True)
     return root
+
+
+# Paths that the mutating file tools must never touch in self-edit mode, even
+# though they live inside the repo root: VCS internals, env/secrets and runtime
+# state (the DB, keys). Reading is fine; writing/moving/deleting is blocked.
+def _self_edit_protected(rel_path: str) -> bool:
+    # normpath collapses any leading "./"; do NOT lstrip("./") here — that would
+    # also eat the leading dot of ".git"/".env" and defeat the guard.
+    norm = os.path.normpath(rel_path).replace(os.sep, "/").lower()
+    if not norm or norm == ".":
+        return False
+    top = norm.split("/", 1)[0]
+    if top in (".git", "data"):
+        return True
+    if norm == ".env" or norm.startswith(".env."):
+        return True
+    if norm.endswith(".key") or "secret" in norm:
+        return True
+    return False
+
+
+def _deny_protected(target: str) -> str:
+    """Return a denial string if ``target`` is protected in self-edit mode, else ""."""
+    if not _self_edit.get():
+        return ""
+    rel = os.path.relpath(target, _workspace_root())
+    if _self_edit_protected(rel):
+        return f"[denied: '{rel}' is protected in self-edit mode]"
+    return ""
 
 
 def current_project_files() -> list[str]:
@@ -195,6 +267,8 @@ def write_file(path: str, content: str) -> str:
         target = _safe_path(path)
     except ValueError as exc:
         return f"[error: {exc}]"
+    if denial := _deny_protected(target):
+        return denial
     os.makedirs(os.path.dirname(target) or _workspace_root(), exist_ok=True)
     with open(target, "w", encoding="utf-8") as fh:
         fh.write(content)
@@ -213,6 +287,8 @@ def move_file(src: str, dst: str) -> str:
         target = _safe_path(dst)
     except ValueError as exc:
         return f"[error: {exc}]"
+    if denial := (_deny_protected(source) or _deny_protected(target)):
+        return denial
     if not os.path.isfile(source):
         return f"[not found: {src}]"
     os.makedirs(os.path.dirname(target) or _workspace_root(), exist_ok=True)
@@ -231,6 +307,8 @@ def delete_file(path: str) -> str:
         target = _safe_path(path)
     except ValueError as exc:
         return f"[error: {exc}]"
+    if denial := _deny_protected(target):
+        return denial
     if not os.path.isfile(target):
         return f"[not found: {path}]"
     os.remove(target)

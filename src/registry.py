@@ -32,8 +32,8 @@ CEO_SLUG = "ceo"
 
 # Default permission grants per role for the seed set. Values are scalars or
 # JSON strings (delegate_to is a JSON list / "*").
-_SHELL_ROLES = {"developer", "frontend", "tester", "backend_reviewer", "frontend_reviewer"}
-_FILE_ROLES = {"developer", "frontend", "tester", "backend_reviewer", "frontend_reviewer", "reviewer"}
+_SHELL_ROLES = {"developer", "frontend", "tester", "backend_reviewer", "frontend_reviewer", "maintainer"}
+_FILE_ROLES = {"developer", "frontend", "tester", "backend_reviewer", "frontend_reviewer", "reviewer", "maintainer"}
 
 # One-line responsibility per role (seed obligations).
 _OBLIGATIONS = {
@@ -47,6 +47,7 @@ _OBLIGATIONS = {
     "backend_reviewer": "Ревью backend-кода: баги, безопасность, логика.",
     "frontend_reviewer": "Ревью frontend-кода: state/props, доступность, баги рендера.",
     "reviewer": "Тех-лид: сверка структуры проекта, перенос/чистка файлов.",
+    "maintainer": "Правки в собственном коде системы: ветка, изменения, тесты, дифф.",
 }
 
 
@@ -58,6 +59,9 @@ def _default_permissions(slug: str) -> list[tuple[str, str]]:
         perms.append(("can_run_shell", "true"))
     if slug == "reviewer":
         perms.append(("can_edit_others_code", "true"))
+    if slug == "maintainer":
+        # Marks the agent as allowed to edit the app's OWN source (self-edit mode).
+        perms.append(("can_self_modify", "true"))
     if slug == "ceo":
         perms.append(("delegate_to", json.dumps("*")))
         perms.append(("can_modify_agents", "true"))
@@ -75,6 +79,7 @@ class Registry:
         init_db()
         self.seed_if_empty()
         self._ensure_ru_names()
+        self._ensure_builtin_roles()
         self.reload()
 
     def _ensure_ru_names(self) -> None:
@@ -90,6 +95,37 @@ class Registry:
                     changed = True
             if changed:
                 session.commit()
+
+    def _ensure_builtin_roles(self) -> None:
+        """Insert built-in roles added AFTER the initial seed (e.g. ``maintainer``)
+        so an already-seeded database gains them without a full reseed. Existing
+        rows are left untouched (admin edits win)."""
+        builtins = {"maintainer": SPECIALIST_PROMPTS.get("maintainer", "")}
+        with get_session() as session:
+            for slug, prompt in builtins.items():
+                if session.exec(select(Agent).where(Agent.slug == slug)).first():
+                    continue
+                agent = Agent(
+                    slug=slug,
+                    name=ROLE_LABELS_RU.get(slug) or ROLE_LABELS.get(slug, slug),
+                    role=slug,
+                    system_prompt=prompt,
+                    folder_path=f"agents/{slug}",
+                )
+                session.add(agent)
+                session.commit()
+                session.refresh(agent)
+                for key, value in _default_permissions(slug):
+                    session.add(AgentPermission(agent_id=agent.id, key=key, value=value))
+                session.add(
+                    AgentObligation(
+                        agent_id=agent.id,
+                        key="primary",
+                        description=_OBLIGATIONS.get(slug, ""),
+                    )
+                )
+                session.commit()
+                logger.info("Registry added built-in role %r", slug)
 
     def seed_if_empty(self) -> None:
         with get_session() as session:
