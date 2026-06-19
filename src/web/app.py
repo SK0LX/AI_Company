@@ -30,17 +30,33 @@ _STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 # it to reconcile immediately so a token change starts/stops a bot at once.
 manager = TelegramManager()
 proactive = None  # ProactiveService, created at startup
+routine_scheduler = None  # RoutineScheduler, created at startup
+
+
+async def _routine_runner(routine: dict) -> str:
+    """Execute a routine's prompt: wake the whole team, or one agent."""
+    from src.graph.team_graph import aagent_reply, arun_team
+
+    prompt = routine.get("prompt") or ""
+    target = routine.get("target") or "team"
+    if target == "team":
+        answer, _kind, _did = await arun_team(prompt, thread_id=f"routine-{routine.get('id')}")
+        return answer
+    if registry.is_specialist(target):
+        return await aagent_reply(target, prompt)
+    return f"[рутина: неизвестная цель '{target}']"
 
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
-    global proactive
+    global proactive, routine_scheduler
     # Create tables, seed the default roles on first run, load the cache.
     registry.setup()
     # Materialize each agent's folder (agents/<slug>/) so skills can live there,
     # then discover + register the skills found in those folders.
     from src.agent_fs import scaffold_all
     from src.proactive import ProactiveService
+    from src.routines import RoutineScheduler
     from src.skills import skill_loader
 
     scaffold_all()
@@ -49,9 +65,14 @@ async def _lifespan(app: FastAPI):
     # Agents post to the team chat on events (guardrailed; off unless configured).
     proactive = ProactiveService(manager.post_to_team)
     await proactive.start()
+    # Recurring jobs that wake the team/agents on a schedule (off unless enabled).
+    routine_scheduler = RoutineScheduler(_routine_runner, manager.post_to_team)
+    await routine_scheduler.start()
     try:
         yield
     finally:
+        if routine_scheduler is not None:
+            await routine_scheduler.stop()
         if proactive is not None:
             await proactive.stop()
         await manager.stop()
@@ -294,6 +315,113 @@ def proactive_mute(payload: dict) -> dict:
     else:
         proactive.unmute()
     return {"muted": proactive.muted}
+
+
+# --- costs & budgets --------------------------------------------------------
+
+@app.get("/api/costs")
+def costs() -> dict:
+    from src import budget
+
+    return budget.cost_summary()
+
+
+@app.get("/api/budgets")
+def list_budgets() -> list[dict]:
+    from src import budget
+
+    return budget.list_budgets()
+
+
+@app.post("/api/budgets")
+def upsert_budget(payload: dict) -> dict:
+    from src import budget
+
+    return budget.set_budget(payload or {})
+
+
+@app.delete("/api/budgets/{policy_id}", status_code=204)
+def delete_budget(policy_id: int) -> None:
+    from src import budget
+
+    if not budget.delete_budget(policy_id):
+        raise HTTPException(404, "policy not found")
+
+
+# --- routines / heartbeats --------------------------------------------------
+
+@app.get("/api/routines")
+def list_routines() -> list[dict]:
+    from src import routines
+
+    return routines.list_routines()
+
+
+@app.post("/api/routines", status_code=201)
+def create_routine(payload: dict) -> dict:
+    from src import routines
+
+    return routines.create_routine(payload or {})
+
+
+@app.patch("/api/routines/{routine_id}")
+def update_routine(routine_id: int, payload: dict) -> dict:
+    from src import routines
+
+    row = routines.update_routine(routine_id, payload or {})
+    if row is None:
+        raise HTTPException(404, "routine not found")
+    return row
+
+
+@app.delete("/api/routines/{routine_id}", status_code=204)
+def delete_routine(routine_id: int) -> None:
+    from src import routines
+
+    if not routines.delete_routine(routine_id):
+        raise HTTPException(404, "routine not found")
+
+
+@app.post("/api/routines/{routine_id}/run")
+def run_routine(routine_id: int) -> dict:
+    from src import routines
+
+    if not routines.trigger_now(routine_id):
+        raise HTTPException(404, "routine not found")
+    return {"ok": True, "note": "запущу на ближайшем тике планировщика"}
+
+
+# --- approvals (typed, audited) ---------------------------------------------
+
+@app.get("/api/approvals")
+def list_approvals(limit: int = 50) -> list[dict]:
+    from src import approvals
+
+    return approvals.recent(limit)
+
+
+@app.get("/api/approvals/pending")
+def pending_approvals() -> list[dict]:
+    from src import approvals
+
+    return approvals.pending()
+
+
+@app.post("/api/approvals/{approval_id}/decide")
+async def decide_approval(approval_id: int, payload: dict) -> dict:
+    """Approve or deny a pending approval from the dashboard (races Telegram)."""
+    from src import approvals
+
+    approvals.decide(approval_id, bool((payload or {}).get("approved")), reason="web")
+    return {"ok": True}
+
+
+@app.get("/api/activity/system")
+def system_activity(limit: int = 80) -> list[dict]:
+    """The raw audit/activity log (control-plane events) for the dashboard."""
+    from src import activity
+
+    return activity.recent(limit)
 
 
 @app.websocket("/ws/events")
