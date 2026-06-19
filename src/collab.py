@@ -334,17 +334,65 @@ def get_task(task_id: int) -> Optional[dict]:
         t = session.get(Task, task_id)
         if not t:
             return None
+        owner = by_slug.get(t.owner_agent_id)
+        creator = by_slug.get(t.created_by)
+        closed = t.status in ("done", "cancelled")
         return {
             "id": t.id,
             "title": t.title,
             "description": t.description,
             "status": t.status,
-            "owner": by_slug.get(t.owner_agent_id),
-            "created_by": by_slug.get(t.created_by),
+            "owner": owner,
+            "owner_name": registry.label(owner) if owner else None,
+            "created_by": creator,
+            "from_name": registry.label(creator) if creator else "Пользователь",
+            "to_name": registry.label(owner) if owner else "—",
+            "priority": t.priority or "обычный",
+            "complexity": t.complexity or 1,
             "parent_task_id": t.parent_task_id,
             "created_at": t.created_at.isoformat(),
             "updated_at": t.updated_at.isoformat(),
+            "closed_at": t.updated_at.isoformat() if closed else None,
         }
+
+
+def home_summary() -> dict:
+    """The AI-Office home view: tasks-closed-today, team with working/idle status,
+    workload split, and column counts."""
+    by_slug = _slug_by_id()
+    today = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+    counts = {st: 0 for st in TASK_STATUSES}
+    closed_today = 0
+    busy: dict[str, int] = {}
+    with get_session() as session:
+        for t in session.exec(select(Task)).all():
+            counts[t.status] = counts.get(t.status, 0) + 1
+            if t.status == "done" and t.updated_at and t.updated_at >= today:
+                closed_today += 1
+            if t.status == "in_progress":
+                owner = by_slug.get(t.owner_agent_id)
+                if owner:
+                    busy[owner] = busy.get(owner, 0) + 1
+    team = [
+        {"slug": a.slug, "name": a.name, "role": a.role,
+         "status": "working" if busy.get(a.slug) else "idle",
+         "active_tasks": busy.get(a.slug, 0), "is_lead": a.slug == "ceo"}
+        for a in registry.list_agents(enabled_only=True)
+    ]
+    total_active = sum(busy.values())
+    workload = [
+        {"slug": s, "name": registry.label(s), "count": n,
+         "share": round(100 * n / total_active) if total_active else 0}
+        for s, n in sorted(busy.items(), key=lambda kv: kv[1], reverse=True)
+    ]
+    return {
+        "closed_today": closed_today,
+        "total": sum(counts.values()),
+        "by_status": counts,
+        "active": total_active,
+        "team": team,
+        "workload": workload,
+    }
 
 
 # --- board management (agents can tidy the kanban the user sees) -------------

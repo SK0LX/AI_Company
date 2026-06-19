@@ -28,3 +28,6 @@ cryptography>=42.0.0
 
 # Agent folder / skill manifests (manifest.yaml, skill.yaml — v2 stage 5)
 pyyaml>=6.0
+
+# System monitor for the dashboard (RAM/disk/uptime) — optional, degrades if absent
+psutil>=5.9

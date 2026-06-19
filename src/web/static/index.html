@@ -112,6 +112,45 @@
                overflow-x:auto; -webkit-overflow-scrolling:touch; padding-bottom:6px; }
       .modal { width:100%; padding:16px; }
     }
+    /* home (AI Office) */
+    .home { max-width:780px; margin:0 auto; }
+    .home-greet { display:flex; justify-content:space-between; align-items:flex-end; margin-bottom:14px; }
+    .home-h { margin:22px 0 10px; font-size:13px; text-transform:uppercase; letter-spacing:.4px; color:var(--muted); }
+    .hero { display:flex; align-items:center; gap:14px; padding:18px; border-radius:16px;
+            background:linear-gradient(135deg, #16361f, #143026); border:1px solid #1f5a37; }
+    .hero-ico { font-size:30px; }
+    .hero-title { font-size:18px; font-weight:700; }
+    .hero-sub { color:#9fe6b8; font-size:13px; margin-top:2px; }
+    .team { display:grid; grid-template-columns:repeat(auto-fill,minmax(120px,1fr)); gap:10px; }
+    .tcard { background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:12px; text-align:center; }
+    .av { position:relative; width:46px; height:46px; border-radius:50%; margin:0 auto 8px; color:#fff;
+          font-weight:700; font-size:16px; display:flex; align-items:center; justify-content:center; }
+    .av .st { position:absolute; right:-1px; bottom:-1px; width:13px; height:13px; border-radius:50%;
+              background:var(--muted); border:2px solid var(--panel); }
+    .av .st.on { background:var(--ok); box-shadow:0 0 0 0 rgba(52,211,120,.6); animation:pulse 1.8s infinite; }
+    @keyframes pulse { 0%{box-shadow:0 0 0 0 rgba(52,211,120,.5)} 70%{box-shadow:0 0 0 7px rgba(52,211,120,0)} 100%{box-shadow:0 0 0 0 rgba(52,211,120,0)} }
+    .tname { font-weight:600; font-size:13px; }
+    .tname .lead { font-size:9px; background:var(--accent); color:#06210f; padding:1px 5px; border-radius:5px; vertical-align:middle; }
+    .trole { color:var(--muted); font-size:11px; margin:2px 0 6px; min-height:14px; }
+    .tstat { font-size:11px; color:var(--muted); }
+    .tstat.work { color:var(--ok); }
+    .workbar { display:flex; height:12px; border-radius:7px; overflow:hidden; background:#161b28; border:1px solid var(--line); }
+    .workbar .seg { height:100%; }
+    .workbar .seg.idle { background:#222838; }
+    .worklegend { display:flex; flex-wrap:wrap; gap:10px 16px; margin-top:8px; font-size:12px; color:var(--muted); }
+    .worklegend .wl i { display:inline-block; width:9px; height:9px; border-radius:3px; margin-right:5px; vertical-align:middle; }
+    .sysmon { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:10px; }
+    .syscell { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:12px 14px; }
+    .sysk { color:var(--muted); font-size:11px; text-transform:uppercase; }
+    .sysv { font-size:15px; font-weight:600; margin:4px 0 6px; font-variant-numeric:tabular-nums; }
+    .sysbar { height:5px; border-radius:3px; background:#1a2030; overflow:hidden; }
+    .sysbar > div { height:100%; background:var(--accent); }
+    /* task detail card */
+    .taskcard { display:grid; grid-template-columns:1fr 1fr; gap:8px 16px; padding:12px; border-radius:12px;
+                background:var(--panel); border:1px solid var(--line); }
+    .taskcard .trow { display:flex; justify-content:space-between; gap:8px; font-size:13px; }
+    .taskcard .tk { color:var(--muted); }
+    .taskcard .tv { font-weight:600; text-align:right; }
     /* control plane: costs / budgets / routines / approvals */
     .ctrl-grid { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
     .ctrl-grid .card { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:16px; }
@@ -150,7 +189,8 @@
     <div style="display:flex; align-items:center; gap:18px">
       <h1>🏢 AI IT Company</h1>
       <nav class="tabs">
-        <button class="tab active" id="tab-agents" onclick="showView('agents')">Агенты</button>
+        <button class="tab active" id="tab-home" onclick="showView('home')">Главная</button>
+        <button class="tab" id="tab-agents" onclick="showView('agents')">Агенты</button>
         <button class="tab" id="tab-office" onclick="showView('office')">Офис</button>
         <button class="tab" id="tab-board" onclick="showView('board')">Доска</button>
         <button class="tab" id="tab-activity" onclick="showView('activity')">Активность</button>
@@ -163,8 +203,26 @@
     </div>
   </header>
   <main>
+    <!-- HOME (AI Office) -->
+    <section id="view-home">
+      <div class="home">
+        <div class="home-greet">
+          <div><div class="muted" style="font-size:12px">AI Office</div><h2 id="homeHi" style="margin:2px 0 0">Привет 👋</h2></div>
+          <button onclick="loadHome()">↻ Обновить</button>
+        </div>
+        <div class="hero" id="homeHero"><div class="muted">…</div></div>
+        <h3 class="home-h">Команда</h3>
+        <div class="team" id="homeTeam"></div>
+        <h3 class="home-h">Загрузка <span class="muted" style="font-weight:400">— активные задачи</span></h3>
+        <div class="workbar" id="homeWorkbar"></div>
+        <div class="worklegend" id="homeWorklegend"></div>
+        <h3 class="home-h">Система</h3>
+        <div class="sysmon" id="homeSystem"></div>
+      </div>
+    </section>
+
     <!-- AGENTS -->
-    <section id="view-agents">
+    <section id="view-agents" class="hidden">
       <span class="muted" id="count"></span>
       <table>
         <thead><tr>
@@ -325,6 +383,8 @@
     <div class="modal">
       <h2 id="tlTitle" style="margin-top:0">Задача</h2>
       <div class="muted" id="tlMeta" style="margin-bottom:12px"></div>
+      <div id="tlCard" class="taskcard"></div>
+      <div class="muted" style="font-size:11px;text-transform:uppercase;margin:14px 0 6px">Таймлайн</div>
       <ul class="tl" id="tlList"></ul>
       <div class="modal-actions"><span></span><button onclick="closeDrawer()">Закрыть</button></div>
     </div>
@@ -350,21 +410,79 @@ const esc = (s) => (s==null?'':String(s)).replace(/[&<>]/g, c => ({'&':'&amp;','
 let curView = 'agents';
 function showView(v) {
   curView = v;
+  $('view-home').classList.toggle('hidden', v !== 'home');
   $('view-agents').classList.toggle('hidden', v !== 'agents');
   $('view-office').classList.toggle('hidden', v !== 'office');
   $('view-board').classList.toggle('hidden', v !== 'board');
   $('view-activity').classList.toggle('hidden', v !== 'activity');
   $('view-control').classList.toggle('hidden', v !== 'control');
+  $('tab-home').classList.toggle('active', v === 'home');
   $('tab-agents').classList.toggle('active', v === 'agents');
   $('tab-office').classList.toggle('active', v === 'office');
   $('tab-board').classList.toggle('active', v === 'board');
   $('tab-activity').classList.toggle('active', v === 'activity');
   $('tab-control').classList.toggle('active', v === 'control');
   $('addBtn').style.visibility = v === 'agents' ? 'visible' : 'hidden';
+  if (v === 'home') loadHome();
   if (v === 'board') { loadBoard(); loadGraph(); }
   if (v === 'activity') loadActivity();
   if (v === 'office') loadOffice();
   if (v === 'control') loadControl();
+}
+
+// ---- home (AI Office dashboard) --------------------------------------------
+function hueOfStr(s) { let h = 0; for (const c of (s||'')) h = (h*31 + c.charCodeAt(0)) % 360; return h; }
+function initialsOf(name) {
+  return (name||'?').trim().split(/\s+/).map(w => w[0]||'').join('').slice(0,2).toUpperCase();
+}
+async function loadHome() {
+  const h = await jget('/api/home') || {};
+  const sys = await jget('/api/system') || {};
+  const closed = h.closed_today || 0;
+  const active = h.active || 0;
+  $('homeHero').innerHTML = `
+    <div class="hero-ico">${active ? '⚡' : '✅'}</div>
+    <div>
+      <div class="hero-title">${active ? 'Команда в работе' : 'Всё под контролем'}</div>
+      <div class="hero-sub">${closed} ${plural(closed,'задача','задачи','задач')} закрыто сегодня${active ? ` · ${active} в работе` : ''}</div>
+    </div>`;
+  $('homeTeam').innerHTML = (h.team||[]).map(a => {
+    const hue = hueOfStr(a.slug);
+    const work = a.status === 'working';
+    return `<div class="tcard">
+      <div class="av" style="background:hsl(${hue} 55% 45%)">${esc(initialsOf(a.name))}
+        <span class="st ${work?'on':''}"></span></div>
+      <div class="tname">${esc(a.name)}${a.is_lead?' <span class="lead">lead</span>':''}</div>
+      <div class="trole">${esc(a.role||'')}</div>
+      <div class="tstat ${work?'work':''}">${work?('● работает'+(a.active_tasks>1?` ×${a.active_tasks}`:'')):'idle'}</div>
+    </div>`;
+  }).join('') || '<div class="muted">нет агентов</div>';
+  // workload bar
+  const wl = h.workload || [];
+  $('homeWorkbar').innerHTML = wl.length ? wl.map(w =>
+    `<div class="seg" style="width:${w.share}%;background:hsl(${hueOfStr(w.slug)} 60% 50%)" title="${esc(w.name)} ${w.share}%"></div>`
+  ).join('') : '<div class="seg idle" style="width:100%"></div>';
+  $('homeWorklegend').innerHTML = wl.length ? wl.map(w =>
+    `<span class="wl"><i style="background:hsl(${hueOfStr(w.slug)} 60% 50%)"></i>${esc(w.name)} ${w.share}%</span>`
+  ).join('') : '<span class="muted">никто не занят</span>';
+  // system monitor
+  const cell = (label, val, pct) => `
+    <div class="syscell">
+      <div class="sysk">${label}</div>
+      <div class="sysv">${esc(val||'—')}</div>
+      ${pct!=null ? `<div class="sysbar"><div style="width:${Math.min(100,pct)}%"></div></div>` : ''}
+    </div>`;
+  $('homeSystem').innerHTML =
+    cell('RAM', sys.mem_label, sys.mem_percent) +
+    cell('Диск', sys.disk_label, sys.disk_percent) +
+    cell('Аптайм', sys.uptime) +
+    cell('CPU', sys.cpu_percent!=null ? sys.cpu_percent+'%' : (sys.load1!=null?'load '+sys.load1:'—'), sys.cpu_percent);
+}
+function plural(n, one, few, many) {
+  const m10 = n % 10, m100 = n % 100;
+  if (m10 === 1 && m100 !== 11) return one;
+  if (m10 >= 2 && m10 <= 4 && (m100 < 10 || m100 >= 20)) return few;
+  return many;
 }
 
 // ---- control plane: costs / budgets / routines / approvals -----------------
@@ -626,7 +744,16 @@ async function openTimeline(id) {
       (await fetch(`/api/tasks/${id}/events`)).json(),
     ]);
     $('tlTitle').textContent = `#${id} · ${task.title || ''}`;
-    $('tlMeta').textContent = `статус: ${task.status} · владелец: ${task.owner || '—'} · создал: ${task.created_by || 'user'}`;
+    $('tlMeta').textContent = task.description || '';
+    const trow = (k, v) => `<div class="trow"><span class="tk">${k}</span><span class="tv">${esc(v)}</span></div>`;
+    $('tlCard').innerHTML =
+      trow('Статус', task.status) +
+      trow('От', task.from_name || 'Пользователь') +
+      trow('Кому', task.to_name || '—') +
+      trow('Приоритет', task.priority || 'обычный') +
+      trow('Сложность', task.complexity || 1) +
+      trow('Создана', fmtTime(task.created_at)) +
+      (task.closed_at ? trow('Закрыта', fmtTime(task.closed_at)) : '');
     $('tlList').innerHTML = events.map(e => {
       const p = e.payload || {};
       const extra = [p.to && `→ ${p.to}`, p.helper && `helper ${p.helper}`, p.status, p.reason]
@@ -685,6 +812,7 @@ function scheduleRefresh() {
     if (curView === 'activity') loadActivity();
     if (curView === 'office') loadOffice();
     if (curView === 'control') loadControl();
+    if (curView === 'home') loadHome();
     const open = $('drawer').classList.contains('open');
     if (open && $('drawer').dataset.task) openTimeline(Number($('drawer').dataset.task));
   }, 400);
@@ -804,7 +932,7 @@ function initTelegram() {
   document.body.classList.add('tg');
   try { TG.ready(); TG.expand(); } catch (e) {}
   applyTgTheme(TG);
-  showView('office');                       // open the office map by default
+  showView('home');                         // open the AI Office home by default
   fetch('/api/tg/auth', {method:'POST', headers:{'Content-Type':'application/json'},
                          body: JSON.stringify({init_data: TG.initData})})
     .then(async r => { if (!r.ok) { const e = await r.json().catch(()=>({})); throw new Error(e.detail || 'Нет доступа'); } })

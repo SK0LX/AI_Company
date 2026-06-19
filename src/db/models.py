@@ -79,6 +79,8 @@ class Task(SQLModel, table=True):
     owner_agent_id: Optional[int] = Field(default=None, index=True, foreign_key="agent.id")
     parent_task_id: Optional[int] = Field(default=None, index=True, foreign_key="task.id")
     created_by: Optional[int] = Field(default=None, foreign_key="agent.id")  # agent or null=user
+    priority: str = "обычный"  # обычный | высокий | низкий (free-text)
+    complexity: int = 1  # 1..5, a rough effort estimate
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 

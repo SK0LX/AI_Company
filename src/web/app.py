@@ -275,6 +275,22 @@ def office_state() -> dict:
     return collab.office_state()
 
 
+@app.get("/api/home")
+def home_summary() -> dict:
+    """AI-Office home: tasks-closed-today, team status, workload, column counts."""
+    from src import collab
+
+    return collab.home_summary()
+
+
+@app.get("/api/system")
+def system_stats() -> dict:
+    """Host/runtime resource snapshot for the system monitor (RAM/disk/uptime)."""
+    from src import system
+
+    return system.snapshot()
+
+
 @app.get("/api/webapp")
 def webapp_config() -> dict:
     """Tells the page whether the Mini App is configured (URL set)."""
