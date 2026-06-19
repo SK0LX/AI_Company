@@ -83,6 +83,35 @@ class Settings(BaseSettings):
     shell_timeout: int = 300
     command_approval_timeout: int = 600
 
+    # Self-modification: let the `maintainer` agent edit THIS application's OWN
+    # source code (the running bot itself) instead of a sandbox project. It works
+    # on a git branch, runs the tests and reports a diff — it never pushes or
+    # restarts. OFF by default: it points the file/shell tools at the real repo,
+    # so only enable it in a trusted, version-controlled checkout (and you'll
+    # want enable_shell_execution=true so it can branch/test). self_repo_dir is
+    # the repo root; empty = auto-detect the checkout that contains this package.
+    enable_self_modify: bool = False
+    self_repo_dir: str = ""
+    # When on, the maintainer works inside an isolated `git worktree` on a fresh
+    # branch (in a temp dir) instead of editing the live working tree in place —
+    # the running bot is never disturbed and the change is trivially reviewable.
+    # Falls back to in-place editing if git/worktree is unavailable.
+    self_worktree: bool = True
+    self_worktree_dir: str = ""  # empty = <tempdir>/aiagents-worktrees
+
+    # Budgets & cost control: every model call is metered into a cost ledger
+    # regardless. When enable_budget is on, BudgetPolicy hard-stops are ENFORCED —
+    # an over-budget agent/company is paused until the window resets or the limit
+    # is raised. OFF by default so nothing blocks unexpectedly.
+    enable_budget: bool = False
+
+    # Routines / heartbeats: recurring jobs that wake the team or one agent on a
+    # schedule and post the result to the team chat. OFF by default; needs
+    # team_chat_id set to post. routines_tick_seconds is how often the scheduler
+    # checks for due routines.
+    enable_routines: bool = False
+    routines_tick_seconds: int = 30
+
     # Stream the internal agent-to-agent chatter (CEO delegations + each
     # specialist's reply) into the chat, not just the final answer.
     show_team_chatter: bool = True
@@ -106,6 +135,17 @@ class Settings(BaseSettings):
     # matters on the OpenRouter free daily cap. Task/event recording and the help
     # flow run regardless of this flag (they cost no LLM).
     enable_negotiation: bool = False
+
+    # Group presence (live multi-human group chat): the agent bots behave like
+    # colleagues — usually silent, at most one replies at a time, they can talk to
+    # each other for a couple of turns, and can do real work (files) per their
+    # permissions. Loops are impossible (only HUMAN messages start a turn-burst,
+    # which is hard-capped). Tune to taste; set enable_group_chat=false to mute.
+    enable_group_chat: bool = True
+    group_max_agent_turns: int = 2  # agent contributions per human message (cap)
+    group_cooldown: int = 6  # min seconds between two agent posts in a chat
+    group_ambient_prob: float = 0.15  # chance to consider chiming into idle chatter
+    group_history_turns: int = 16  # recent group messages kept as context
 
     # Proactive posting (v2 stage 7): agents post short updates to the team chat
     # on events (task done, help needed, declined). OFF by default. Requires a

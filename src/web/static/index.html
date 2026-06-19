@@ -112,6 +112,33 @@
                overflow-x:auto; -webkit-overflow-scrolling:touch; padding-bottom:6px; }
       .modal { width:100%; padding:16px; }
     }
+    /* control plane: costs / budgets / routines / approvals */
+    .ctrl-grid { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
+    .ctrl-grid .card { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:16px; }
+    .ctrl-grid .card h3 { margin:0 0 12px; font-size:14px; }
+    .pills { display:flex; flex-wrap:wrap; gap:6px; margin-top:8px; }
+    .pill { font-size:11px; padding:3px 9px; border-radius:999px; background:#1a2030; border:1px solid var(--line); }
+    .pill.alt { background:#161b28; color:var(--muted); }
+    .brow { display:flex; align-items:center; gap:8px; padding:7px 0; border-top:1px solid var(--line); font-size:13px; }
+    .brow:first-child { border-top:none; }
+    .bmeta { flex:1; min-width:0; }
+    .bar { width:90px; height:6px; border-radius:4px; background:#1a2030; overflow:hidden; }
+    .bar .fill { height:100%; background:var(--accent); }
+    .bar .fill.over { background:var(--danger); }
+    .bnums { font-variant-numeric:tabular-nums; white-space:nowrap; font-size:12px; }
+    .tag { font-size:9px; padding:1px 6px; border-radius:4px; background:#2a3142; color:var(--muted); text-transform:uppercase; }
+    .tag.off { background:#3a2230; color:var(--danger); }
+    .x, .mini { padding:2px 8px; border-radius:6px; color:var(--muted); font-size:12px; }
+    .x:hover { color:var(--danger); border-color:var(--danger); }
+    .miniform { display:flex; flex-wrap:wrap; gap:6px; align-items:center; margin-top:12px; padding-top:12px; border-top:1px solid var(--line); }
+    .miniform input, .miniform select { padding:6px 9px; font-size:12px; }
+    .miniform .chk { display:flex; align-items:center; gap:4px; color:var(--muted); font-size:12px; }
+    .fi.pend { border:1px solid var(--accent); border-radius:8px; padding:6px; background:#141a28; }
+    .aprow { display:flex; gap:8px; margin-top:6px; }
+    .aprow button { font-size:12px; padding:4px 10px; border-radius:6px; }
+    .aprow .ok { color:var(--ok); border-color:var(--ok); }
+    .aprow .no { color:var(--danger); border-color:var(--danger); }
+    @media (max-width:860px) { .ctrl-grid { grid-template-columns:none; } }
     /* read-only in the Telegram Mini App (no destructive actions on mobile) */
     body.tg #addBtn, body.tg .row-actions { display:none !important; }
     body.tg { padding-top:env(safe-area-inset-top); }
@@ -127,6 +154,7 @@
         <button class="tab" id="tab-office" onclick="showView('office')">Офис</button>
         <button class="tab" id="tab-board" onclick="showView('board')">Доска</button>
         <button class="tab" id="tab-activity" onclick="showView('activity')">Активность</button>
+        <button class="tab" id="tab-control" onclick="showView('control')">Контроль</button>
       </nav>
     </div>
     <div style="display:flex; align-items:center; gap:14px">
@@ -140,8 +168,8 @@
       <span class="muted" id="count"></span>
       <table>
         <thead><tr>
-          <th>slug</th><th>Имя</th><th>Роль</th><th>Модель</th>
-          <th>Права</th><th>Статус</th><th></th>
+          <th>slug</th><th>Имя</th><th>Роль</th><th>Провайдер</th><th>Модель</th>
+          <th>Бот</th><th>Права</th><th>Статус</th><th></th>
         </tr></thead>
         <tbody id="rows"></tbody>
       </table>
@@ -182,6 +210,48 @@
           <h4 style="margin:0 0 10px; color:var(--muted); font-size:12px; text-transform:uppercase">Активность офиса</h4>
           <div class="feed" id="officeFeed"></div>
         </aside>
+      </div>
+    </section>
+
+    <!-- CONTROL (costs / budgets / routines / approvals) -->
+    <section id="view-control" class="hidden">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px">
+        <span class="muted">Бюджеты · стоимость · рутины · подтверждения</span>
+        <button onclick="loadControl()">↻ Обновить</button>
+      </div>
+      <div class="ctrl-grid">
+        <div class="card">
+          <h3>💰 Стоимость</h3>
+          <div id="costSummary" class="muted">…</div>
+          <div id="costBreak"></div>
+        </div>
+        <div class="card">
+          <h3>🎯 Бюджеты <span class="muted" style="font-weight:400">— hard-stop</span></h3>
+          <div id="budgetList"></div>
+          <div class="miniform">
+            <input id="b_scope" placeholder="scope: global или slug" value="global">
+            <select id="b_window"><option value="day">в день</option><option value="month">в месяц</option><option value="lifetime">всего</option></select>
+            <input id="b_limit" type="number" step="0.01" placeholder="лимит $" style="width:90px">
+            <label class="chk"><input type="checkbox" id="b_hard" checked> hard-stop</label>
+            <button class="primary" onclick="saveBudget()">Сохранить</button>
+          </div>
+        </div>
+        <div class="card">
+          <h3>🔔 Рутины <span class="muted" style="font-weight:400">— по расписанию</span></h3>
+          <div id="routineList"></div>
+          <div class="miniform">
+            <input id="r_name" placeholder="название" style="width:120px">
+            <select id="r_kind"><option value="interval">интервал, c</option><option value="daily">ежедневно HH:MM</option><option value="weekly">еженед. D HH:MM</option></select>
+            <input id="r_value" placeholder="3600 / 09:00" style="width:100px">
+            <input id="r_target" placeholder="team или slug" value="team" style="width:100px">
+            <input id="r_prompt" placeholder="задача-промпт" style="flex:1; min-width:160px">
+            <button class="primary" onclick="saveRoutine()">Добавить</button>
+          </div>
+        </div>
+        <div class="card">
+          <h3>🛡️ Подтверждения <span class="muted" style="font-weight:400">— аудит</span></h3>
+          <div id="approvalList" class="feed"></div>
+        </div>
       </div>
     </section>
   </main>
@@ -283,15 +353,116 @@ function showView(v) {
   $('view-office').classList.toggle('hidden', v !== 'office');
   $('view-board').classList.toggle('hidden', v !== 'board');
   $('view-activity').classList.toggle('hidden', v !== 'activity');
+  $('view-control').classList.toggle('hidden', v !== 'control');
   $('tab-agents').classList.toggle('active', v === 'agents');
   $('tab-office').classList.toggle('active', v === 'office');
   $('tab-board').classList.toggle('active', v === 'board');
   $('tab-activity').classList.toggle('active', v === 'activity');
+  $('tab-control').classList.toggle('active', v === 'control');
   $('addBtn').style.visibility = v === 'agents' ? 'visible' : 'hidden';
   if (v === 'board') { loadBoard(); loadGraph(); }
   if (v === 'activity') loadActivity();
   if (v === 'office') loadOffice();
+  if (v === 'control') loadControl();
 }
+
+// ---- control plane: costs / budgets / routines / approvals -----------------
+function usd(x) { return '$' + (Number(x) || 0).toFixed(Math.abs(x) < 1 ? 4 : 2); }
+async function jget(u) { try { return await (await fetch(u)).json(); } catch (e) { return null; } }
+
+async function loadControl() {
+  const c = await jget('/api/costs') || {};
+  $('costSummary').innerHTML =
+    `<b style="font-size:20px">${usd(c.total_usd)}</b> всего · ${usd(c.today_usd)} сегодня · ` +
+    `${usd(c.month_usd)} за месяц · <span class="muted">${c.events||0} вызовов</span>`;
+  const agents = (c.by_agent || []).slice(0, 6).map(a =>
+    `<span class="pill">${esc(a.name)} ${usd(a.usd)}</span>`).join('');
+  const models = (c.by_model || []).slice(0, 5).map(m =>
+    `<span class="pill alt">${esc(m.name)} ${usd(m.usd)}</span>`).join('');
+  $('costBreak').innerHTML =
+    `<div class="pills">${agents || '<span class="muted">нет данных</span>'}</div>` +
+    `<div class="pills">${models}</div>`;
+
+  const budgets = await jget('/api/budgets') || [];
+  $('budgetList').innerHTML = budgets.length ? budgets.map(b => {
+    const pct = b.limit_usd > 0 ? Math.min(100, 100 * b.spent_usd / b.limit_usd) : 0;
+    const over = b.hard_stop && pct >= 100;
+    return `<div class="brow">
+      <div class="bmeta"><b>${esc(b.scope)}</b> <span class="muted">/${esc(b.window)}</span>
+        ${b.hard_stop ? '<span class="tag">hard</span>' : ''}</div>
+      <div class="bar"><div class="fill ${over?'over':''}" style="width:${pct}%"></div></div>
+      <div class="bnums">${usd(b.spent_usd)} / ${usd(b.limit_usd)}</div>
+      <button class="x" onclick="delBudget(${b.id})">✕</button>
+    </div>`;
+  }).join('') : '<div class="muted">бюджетов нет</div>';
+
+  const routines = await jget('/api/routines') || [];
+  $('routineList').innerHTML = routines.length ? routines.map(r =>
+    `<div class="brow">
+      <div class="bmeta"><b>${esc(r.name)}</b>
+        <span class="muted">${esc(r.schedule_kind)} ${esc(r.schedule_value)} → ${esc(r.target)}</span>
+        ${r.enabled ? '' : '<span class="tag off">off</span>'}</div>
+      <div class="bnums muted">${r.next_run_at ? fmtTime(r.next_run_at) : '—'}</div>
+      <button class="mini" onclick="runRoutine(${r.id})">▶</button>
+      <button class="x" onclick="delRoutine(${r.id})">✕</button>
+    </div>`).join('') : '<div class="muted">рутин нет</div>';
+
+  const pend = await jget('/api/approvals/pending') || [];
+  const appr = await jget('/api/approvals?limit=25') || [];
+  const pendHtml = pend.map(a =>
+    `<div class="fi system pend"><div class="ico">⏳</div><div class="body">
+      <div class="head"><span class="who">${esc(a.kind)}</span><span class="verb">ожидает решения</span></div>
+      <div class="txt">${esc(a.summary || '')}</div>
+      <div class="aprow">
+        <button class="ok" onclick="decideApproval(${a.id}, true)">✅ Разрешить</button>
+        <button class="no" onclick="decideApproval(${a.id}, false)">⛔ Отклонить</button>
+      </div></div></div>`).join('');
+  const decided = appr.filter(a => a.status !== 'pending').map(a => {
+    const ic = {approved:'✅', denied:'⛔'}[a.status] || '•';
+    return `<div class="fi system"><div class="ico">${ic}</div><div class="body">
+      <div class="head"><span class="who">${esc(a.kind)}</span>
+        <span class="verb">${esc(a.status)}</span></div>
+      <div class="txt">${esc(a.summary || '')}</div></div></div>`;
+  }).join('');
+  $('approvalList').innerHTML = (pendHtml + decided) || '<div class="muted">подтверждений пока нет</div>';
+}
+
+async function decideApproval(id, ok) {
+  await fetch('/api/approvals/' + id + '/decide', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({approved: ok}),
+  });
+  loadControl();
+}
+
+async function saveBudget() {
+  const body = {
+    scope: $('b_scope').value.trim() || 'global',
+    window: $('b_window').value,
+    limit_usd: parseFloat($('b_limit').value || '0'),
+    hard_stop: $('b_hard').checked,
+    enabled: true,
+  };
+  await fetch('/api/budgets', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
+  loadControl();
+}
+async function delBudget(id) { await fetch('/api/budgets/' + id, {method:'DELETE'}); loadControl(); }
+
+async function saveRoutine() {
+  const body = {
+    name: $('r_name').value.trim() || 'routine',
+    schedule_kind: $('r_kind').value,
+    schedule_value: $('r_value').value.trim() || '3600',
+    target: $('r_target').value.trim() || 'team',
+    prompt: $('r_prompt').value.trim(),
+    enabled: true,
+  };
+  await fetch('/api/routines', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
+  $('r_name').value = $('r_value').value = $('r_prompt').value = '';
+  loadControl();
+}
+async function runRoutine(id) { await fetch('/api/routines/' + id + '/run', {method:'POST'}); loadControl(); }
+async function delRoutine(id) { await fetch('/api/routines/' + id, {method:'DELETE'}); loadControl(); }
 
 // ---- office map ------------------------------------------------------------
 function hueOf(s) { let h = 0; for (const c of s) h = (h * 31 + c.charCodeAt(0)) % 360; return h; }
@@ -393,11 +564,19 @@ async function load() {
     const perms = Object.keys(a.permissions || {});
     const pills = perms.length ? perms.map(p => `<span class="pill">${esc(p)}</span>`).join('') : '<span class="muted">—</span>';
     const status = a.enabled ? '<span class="badge-on">● включён</span>' : '<span class="badge-off">○ выключен</span>';
+    const prov = a.provider ? esc(a.provider) : '<span class="muted">глоб.</span>';
+    const bot = a.has_token
+      ? '<span class="badge-on" title="личный Telegram-бот привязан">🤖 есть</span>'
+      : (a.slug === 'ceo'
+          ? '<span class="badge-on" title="командный бот из .env (TELEGRAM_BOT_TOKEN)">🤖 .env</span>'
+          : '<span class="muted">—</span>');
     return `<tr>
       <td><code>${esc(a.slug)}</code></td>
       <td>${esc(a.name)}</td>
       <td class="muted">${esc(a.role)}</td>
+      <td class="muted">${prov}</td>
       <td class="muted">${esc(a.model) || '<span class="muted">дефолт</span>'}</td>
+      <td>${bot}</td>
       <td>${pills}</td>
       <td>${status}</td>
       <td class="row-actions" style="white-space:nowrap">
@@ -504,6 +683,7 @@ function scheduleRefresh() {
     if (curView === 'board') { loadBoard(); loadGraph(); }
     if (curView === 'activity') loadActivity();
     if (curView === 'office') loadOffice();
+    if (curView === 'control') loadControl();
     const open = $('drawer').classList.contains('open');
     if (open && $('drawer').dataset.task) openTimeline(Number($('drawer').dataset.task));
   }, 400);

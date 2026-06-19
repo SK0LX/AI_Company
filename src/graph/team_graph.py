@@ -27,13 +27,14 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 from pydantic import BaseModel, Field
 
-from src import collab, quota
+from src import activity, approvals, budget, collab, quota, selfmod
 from src.registry import registry
 from src.agents.tools import (
     current_project_files,
     sanitize_project,
     set_current_agent,
     set_project_subdir,
+    set_self_edit,
     wiki_index,
     wiki_read_note,
     wiki_search_notes,
@@ -180,6 +181,22 @@ if settings.enable_shell_execution:
         "actually run the tests, have `developer`/`frontend` install deps and "
         "build) and base your final answer on the real results, not assumptions. "
         "If the user declined a command, say so honestly."
+    )
+
+if settings.enable_self_modify:
+    ROUTING_INSTRUCTIONS += (
+        "\n\nSelf-modification (changing THIS system's OWN code): some requests "
+        "are NOT about building a new project — they ask to change THIS bot / "
+        "agent system itself (e.g. 'add Telegram reactions', 'change your CEO "
+        "prompt', 'fix a bug in your own code', 'add this feature to yourself', "
+        "'improve the current project'). Treat 'the current project', 'this "
+        "system', 'yourself' and 'your code' as the EXISTING source repository, "
+        "NOT a new build. For these: do NOT create a new workspace project and do "
+        "NOT set a `structure`; delegate to `maintainer`, which works directly on "
+        "the real repository — it creates a git branch, makes the change, runs "
+        "the tests, and reports a diff for a human to review. It never pushes or "
+        "restarts the bot. If unsure whether the user means the running system or "
+        "a brand-new app, use action='clarify' to ask one quick question first."
     )
 
 
@@ -407,6 +424,9 @@ def _resolve_spec(slug: Optional[str], *, is_ceo: bool = False) -> tuple[str, st
 
 def _make_model(provider: str, model_name: str, api_key: str, base_url: str) -> BaseChatModel:
     """Build a LangChain chat model for ANY supported provider."""
+    # Meter token usage/cost on every provider (attribution comes from context
+    # vars set by the orchestrator). One callback per cached model.
+    cost_cb = budget.make_cost_callback(provider, model_name)
     if provider == "google":
         from langchain_google_genai import ChatGoogleGenerativeAI
 
@@ -418,6 +438,7 @@ def _make_model(provider: str, model_name: str, api_key: str, base_url: str) -> 
             # The SDK retries internally too; keep it low so a hard quota 429
             # fails fast instead of stacking with our own _retry wrapper.
             max_retries=1,
+            callbacks=[cost_cb],
         )
     if provider == "anthropic":
         from langchain_anthropic import ChatAnthropic
@@ -427,6 +448,7 @@ def _make_model(provider: str, model_name: str, api_key: str, base_url: str) -> 
             api_key=api_key or settings.anthropic_api_key,
             max_tokens=settings.max_tokens,
             max_retries=1,
+            callbacks=[cost_cb],
         )
         # Opus 4.7/4.8 / Fable 5 reject temperature (claude-api skill) — omit it.
         if not any(model_name.startswith(p) for p in _ANTHROPIC_NO_TEMPERATURE):
@@ -444,8 +466,9 @@ def _make_model(provider: str, model_name: str, api_key: str, base_url: str) -> 
             max_tokens=settings.max_tokens,
             temperature=settings.temperature,
             max_retries=1,
-            # Count OpenRouter calls against the free daily cap (warn before it hits).
-            callbacks=[quota.counter] if is_or else None,
+            # Count OpenRouter calls against the free daily cap (warn before it
+            # hits), and meter cost on every call.
+            callbacks=[quota.counter, cost_cb] if is_or else [cost_cb],
             default_headers=(
                 {"HTTP-Referer": "https://github.com/ai-it-company", "X-Title": "AI IT Company"}
                 if is_or else None
@@ -515,6 +538,13 @@ def _uses_tools(role: str) -> bool:
         or _perm(role, "can_edit_files")
         or _perm(role, "can_run_shell")
     )
+
+
+def _is_self_editor(role: str) -> bool:
+    """Whether this role edits the app's OWN source (self-modification): the
+    built-in ``maintainer`` or any agent granted the ``can_self_modify`` perm.
+    Only takes effect when ``settings.enable_self_modify`` is on (see callers)."""
+    return role == "maintainer" or _perm(role, "can_self_modify")
 
 
 def _tool_agent(role: str):
@@ -626,6 +656,47 @@ def _tool_agent(role: str):
             "if a whole module/component is missing, report it for the CEO to "
             "delegate. Finish by calling list_files again and reporting the final "
             "structure, what you fixed, and anything still missing."
+        )
+        return create_react_agent(model, tools=tools, prompt=base_prompt + extra)
+
+    if settings.enable_self_modify and _is_self_editor(role):
+        tools = ([list_files, read_file, write_file, move_file, delete_file]
+                 + skill_tools + memory_tools)
+        if can_shell:
+            tools.append(run_shell)
+        if settings.enable_code_execution:
+            tools.append(run_python)
+        extra = (
+            "\n\nSELF-MODIFICATION MODE. You are editing THIS application's OWN "
+            "source repository — the live multi-agent bot itself. You are already "
+            "at the repo root and your file tools read/write the REAL project "
+            "files (not a sandbox copy). Ignore any 'AGREED PROJECT STRUCTURE' — "
+            "work within the existing layout.\n\n"
+            "Follow this exact, careful procedure:\n"
+            "1. EXPLORE first: list_files and read_file the files relevant to the "
+            "request before changing anything. Never edit a file you have not "
+            "read.\n"
+            "2. BRANCH: you MUST work on a dedicated branch, never the live one. "
+            "If the orchestrator already placed you in an isolated worktree on a "
+            "fresh branch (the task will say so), USE it — do NOT create another. "
+            "Otherwise create one with run_shell: `git checkout -b feat/<name>`.\n"
+            "3. EDIT surgically with write_file / move_file — change only what the "
+            "task needs, match the surrounding code style, keep the diff minimal.\n"
+            "4. TEST: run the suite with run_shell (`python tests/run_all.py`, or "
+            "`pytest -q`) and READ the output. Fix real failures you introduced.\n"
+            "5. REPORT: run `git --no-pager diff --stat` then `git --no-pager "
+            "diff`, and summarize — the branch name, which files changed and why, "
+            "the test result (pass/fail with key lines), and the diff. A human "
+            "reviews it and decides whether to merge.\n\n"
+            "HARD RULES — never break these:\n"
+            "- NEVER run `git push`, commit to `main`, merge, deploy, or restart "
+            "the bot/process. You stop after producing a reviewable branch + diff.\n"
+            "- NEVER write to `.git/`, `.env`, anything under `data/`, or any "
+            "secret/key file (the tools block these — don't even try).\n"
+            "- If you cannot run shell (declined or disabled), still make the file "
+            "edits, then clearly state that branching/tests could not run.\n"
+            "- If the change is large, risky or ambiguous, make the smallest safe "
+            "step and report what else is needed rather than guessing."
         )
         return create_react_agent(model, tools=tools, prompt=base_prompt + extra)
 
@@ -828,6 +899,8 @@ async def _update_wiki_card(
 # --- graph nodes ------------------------------------------------------------
 
 async def _ceo_node(state: TeamState, config: Optional[RunnableConfig] = None) -> dict:
+    budget.set_cost_agent("ceo")  # attribute the CEO's model spend
+    budget.set_cost_task(state.get("task_id"))
     model = _retry(_ceo_model().with_structured_output(CeoDecision))
 
     # When the user has approved the plan, forbid re-planning so the CEO actually
@@ -995,11 +1068,31 @@ async def _specialist_node(state: TeamState) -> dict:
     project = state.get("project_dir") or ""
     structure = (state.get("structure") or "").strip()
     task_id = state.get("task_id")
+    label0 = registry.label(role)
+
+    # Budget hard-stop: if this agent (or the company) is over a hard budget,
+    # don't spend more — report it back so the CEO can wrap up honestly.
+    if budget.blocked(role):
+        g = budget.gate(role)
+        try:
+            activity.log("system", "budget_block", role, **g)
+        except Exception:  # noqa: BLE001
+            pass
+        note = (f"[бюджет исчерпан] {label0}: лимит ${g['limit']:.2f} по scope "
+                f"'{g['scope']}'/{g['window']} достигнут (потрачено ${g['spent']:.2f}). "
+                "Задача не выполнена — поднимите лимит или дождитесь сброса окна.")
+        return {
+            "findings": state.get("findings", []) + [f"## {label0}\n{note}"],
+            "steps": state.get("steps", 0) + 1,
+            "next_role": None,
+            "last_role": role,
+        }
+    budget.set_cost_task(task_id)
     task = (
         f"User's overall request:\n{_last_user_text(state['messages'])}\n\n"
         f"Your specific task from the CEO:\n{instruction}"
     )
-    if structure and _uses_tools(role):
+    if structure and _uses_tools(role) and not _is_self_editor(role):
         task += (
             "\n\nAGREED PROJECT STRUCTURE — place files EXACTLY at these paths "
             "(relative to the project root); do not invent your own layout:\n"
@@ -1222,6 +1315,19 @@ async def arun_team(
     completion only for real work, not small talk).
     """
     app = await _get_team_app()
+
+    # Company-wide budget hard-stop: refuse to start a run when over budget.
+    if budget.blocked(None):
+        g = budget.gate(None)
+        try:
+            activity.log("system", "budget_block", "company", **g)
+        except Exception:  # noqa: BLE001
+            pass
+        msg = (f"🚫 Бюджет компании исчерпан: лимит ${g['limit']:.2f}/{g['window']} "
+               f"достигнут (потрачено ${g['spent']:.2f}). Поднимите лимит в админ-"
+               "панели или дождитесь сброса окна.")
+        return msg, None, False
+
     inputs = {
         "messages": [HumanMessage(content=text)],
         "findings": [],  # reset scratchpad for each new request
@@ -1306,15 +1412,57 @@ async def arun_specialist(role: str, text: str, project: str = "") -> str:
     ``project`` points the file tools at one shared ``<workspace>/<project>``
     folder so every specialist on the same request writes into ONE directory.
     """
+    budget.set_cost_agent(role)  # attribute this specialist's model spend
     if _uses_tools(role):
+        self_edit = settings.enable_self_modify and _is_self_editor(role)
+        worktree: Optional[dict] = None
+        if self_edit:
+            # Governance: ask the human before the bot edits its OWN code.
+            if approvals.has_asker():
+                ok = await approvals.request_approval(
+                    "self_modify",
+                    f"{registry.label(role)} собирается изменить собственный код бота",
+                    agent=role,
+                )
+                if not ok:
+                    return "🛑 Изменение собственного кода отклонено пользователем."
+            # Isolate the edit in a dedicated git worktree on a fresh branch so the
+            # live bot is never disturbed (falls back to in-place if unavailable).
+            if settings.self_worktree:
+                worktree = await asyncio.to_thread(selfmod.create_worktree, role)
+                if worktree:
+                    text = (
+                        f"[ИЗОЛИРОВАННЫЙ WORKTREE] Ты уже на свежей ветке "
+                        f"`{worktree['branch']}` в отдельном git worktree — это твой "
+                        "корень репозитория. НЕ создавай новую ветку: правь файлы, "
+                        "запускай тесты и отчитайся диффом.\n\n" + text
+                    )
         set_project_subdir(project)
         set_current_agent(role)  # so @requires can check this agent's permissions
-        result = await _tool_agent(role).ainvoke(
-            {"messages": [HumanMessage(content=text)]},
-            # Allow many tool calls so multi-file work isn't cut short.
-            config={"recursion_limit": 60},
-        )
+        # Point tools at the worktree (isolated) or the live repo (fallback).
+        set_self_edit(self_edit, root=(worktree["path"] if worktree else ""))
+        try:
+            result = await _tool_agent(role).ainvoke(
+                {"messages": [HumanMessage(content=text)]},
+                # Allow many tool calls so multi-file work isn't cut short.
+                config={"recursion_limit": 60},
+            )
+        finally:
+            set_self_edit(False)
         reply = _content_to_text(result["messages"][-1].content) or "..."
+        # In self-edit mode the "project" is the whole repo, so don't dump every
+        # file — the maintainer's own git diff / report is the ground truth.
+        if self_edit:
+            if worktree:
+                stat = await asyncio.to_thread(selfmod.diffstat, worktree["path"])
+                reply += (f"\n\n[worktree] ветка `{worktree['branch']}`\n"
+                          f"путь: {worktree['path']}\n{stat}")
+            try:
+                activity.log(role, "self_modify_run",
+                             worktree["branch"] if worktree else "in-place")
+            except Exception:  # noqa: BLE001
+                pass
+            return reply
         # Ground the report in reality: append what is ACTUALLY on disk so the
         # CEO sees the true file set, not just what the specialist claimed.
         try:
@@ -1351,6 +1499,165 @@ async def aagent_reply(
     messages.append(HumanMessage(content=text))
     resp = await _retry(_specialist_model(slug)).ainvoke(messages)
     reply = _content_to_text(resp.content) or "..."
+    if settings.translate_chatter:
+        reply = await aensure_russian(reply)
+    return reply
+
+
+# --- group chat presence (live multi-human group) ---------------------------
+
+class GroupTurn(BaseModel):
+    """Who, if anyone, should naturally respond next in the team group chat."""
+
+    speak: bool = Field(description="True if exactly one teammate should respond now.")
+    slug: Optional[str] = Field(
+        default=None, description="The teammate's key (from the roster), or null for silence."
+    )
+    reason: str = Field(default="", description="One short sentence: why this teammate, or why silence.")
+
+
+async def aroute_group_speaker(
+    transcript: str, roster: list[tuple[str, str, str]], last_speaker: Optional[str]
+) -> tuple[Optional[str], str]:
+    """Pick AT MOST ONE teammate to respond to the latest group message, or None.
+
+    Biased hard toward silence — a wall of replies is the failure mode. One small
+    structured LLM call. ``roster`` is (slug, name, role) of agents present."""
+    if not roster:
+        return None, "no agents present"
+    lines = "\n".join(f"- {slug} — {name} ({role})" for slug, name, role in roster)
+    valid = {slug for slug, _n, _r in roster}
+    system = SystemMessage(
+        content=(
+            "You decide who, if anyone, naturally responds next in a work team's "
+            "group chat (real people + AI teammates). Read the LATEST message and "
+            "pick the ONE teammate who would naturally reply right now — or choose "
+            "silence. Reply when a teammate is addressed or greeted, a question is "
+            "asked (even without a '?'), help is offered, or someone can add genuine "
+            "value or a short bit of banter. Stay silent for filler ('ок', 'да', "
+            "'лол', reactions) or when nobody really has anything to add. Pick AT "
+            "MOST ONE — never make everyone answer at once. A greeting or a direct "
+            "question usually deserves a brief reply; lean toward being a responsive, "
+            "natural colleague rather than over-cautious.\n\n"
+            f"Teammates present (use the exact key on the left):\n{lines}"
+            + (f"\n\nThe teammate who just spoke is '{last_speaker}' — do not pick them."
+               if last_speaker else "")
+        )
+    )
+    human = HumanMessage(
+        content=(
+            "Recent group conversation (oldest first; the LAST line is the new "
+            f"message):\n{transcript}\n\nShould exactly one teammate respond now? "
+            "If yes, who (slug)? If in doubt, choose silence."
+        )
+    )
+    try:
+        model = _retry(_ceo_model().with_structured_output(GroupTurn))
+        decision: GroupTurn = await model.ainvoke([system, human])
+    except Exception:  # noqa: BLE001 - a routing hiccup means stay silent
+        logger.warning("group routing failed; staying silent", exc_info=True)
+        return None, "routing error"
+    if not decision.speak or not decision.slug:
+        return None, decision.reason or "silence"
+    slug = decision.slug.strip()
+    if slug not in valid or slug == last_speaker:
+        return None, "invalid/just-spoke"
+    return slug, decision.reason or ""
+
+
+class GroupDecision(BaseModel):
+    """One agent's OWN call on whether to chime into the group right now."""
+
+    respond: bool = Field(description="True if YOU would naturally reply to the latest message now.")
+    reply: str = Field(default="", description="Your brief, natural group message (only if respond=True).")
+
+
+async def agroup_decide(slug: str, transcript: str) -> tuple[bool, str]:
+    """Each agent decides FOR ITSELF (its own model call) whether to respond, and
+    what to say. This is the fully-independent mode: every present agent runs this
+    in parallel and those who opt in reply. Returns (respond, reply_text)."""
+    label = registry.label(slug)
+    system = SystemMessage(
+        content=(
+            f"{registry.prompt(slug)}\n\nYou are {label} in your team's GROUP CHAT "
+            "with real people and other AI teammates. Decide FOR YOURSELF whether "
+            "YOU would naturally respond to the LATEST message right now. Reply only "
+            "if it's addressed to you, it's your area/expertise, the room was greeted, "
+            "or you genuinely have something useful or a short natural remark to add. "
+            "It is completely fine — and often right — to STAY SILENT and let "
+            "teammates answer; not everyone should reply to everything. If you reply, "
+            "keep it brief (1-2 sentences), natural, in the user's language; you may "
+            "address people or teammates by name."
+        )
+    )
+    human = HumanMessage(
+        content=f"Recent group conversation (last line is newest):\n{transcript}\n\n"
+        "Do you respond? If yes, what exactly do you say?"
+    )
+    try:
+        model = _retry(_specialist_model(slug).with_structured_output(GroupDecision))
+        decision: GroupDecision = await model.ainvoke([system, human])
+    except Exception:  # noqa: BLE001 - a hiccup means this agent simply stays silent
+        logger.warning("group decision failed for %s", slug, exc_info=True)
+        return False, ""
+    reply = (decision.reply or "").strip()
+    if not decision.respond or not reply:
+        return False, ""
+    if settings.translate_chatter:
+        reply = await aensure_russian(reply)
+    return True, reply
+
+
+async def agroup_reply(
+    slug: str, transcript: str, *, work_intent: bool, project: str
+) -> str:
+    """Generate ONE teammate's group-chat message. Conversational by default; when
+    the moment calls for real work AND the agent has the tools/permissions, it may
+    actually create or change files in a shared group project folder."""
+    label = registry.label(slug)
+    if work_intent and _uses_tools(slug):
+        set_project_subdir(project)
+        set_current_agent(slug)
+        task = (
+            f"You are {label}, chatting in the team's group. Recent conversation:\n"
+            f"{transcript}\n\nDo the concrete work that's being asked of you (create/"
+            "edit the needed files with your tools), then reply to the group in 1-3 "
+            "short sentences saying what you did and the file paths — natural, like a "
+            "colleague. Do not paste large code into the chat."
+        )
+        try:
+            # Cap tool steps tightly in group chat — a casual request must not turn
+            # into a 20-call paid fan-out (it's not a full build, just a quick hand).
+            result = await _tool_agent(slug).ainvoke(
+                {"messages": [HumanMessage(content=task)]}, config={"recursion_limit": 10}
+            )
+            reply = _content_to_text(result["messages"][-1].content) or "Готово."
+        except Exception:  # noqa: BLE001
+            logger.exception("group tool reply failed for %s", slug)
+            reply = "Не получилось доделать — гляну ещё раз."
+        if settings.translate_chatter:
+            reply = await aensure_russian(reply)
+        return reply
+
+    system = SystemMessage(
+        content=(
+            f"{registry.prompt(slug)}\n\nYou are {label} in your team's GROUP CHAT "
+            "with real people and other AI teammates. Reply naturally and briefly "
+            "(1-3 sentences), like a colleague — not a formal report. You may address "
+            "people or teammates by name. If you have nothing useful to add, say so in "
+            "a few words. Answer in the user's language."
+        )
+    )
+    human = HumanMessage(
+        content=f"Recent group conversation (the last line is newest):\n{transcript}\n\n"
+        f"Write {label}'s next message in the group."
+    )
+    try:
+        resp = await _retry(_specialist_model(slug)).ainvoke([system, human])
+        reply = _content_to_text(resp.content) or "..."
+    except Exception:  # noqa: BLE001
+        logger.exception("group reply failed for %s", slug)
+        return ""
     if settings.translate_chatter:
         reply = await aensure_russian(reply)
     return reply
