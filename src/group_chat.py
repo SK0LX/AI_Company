@@ -37,8 +37,12 @@ _WORK_STEMS_RU = (
     "созда", "сдела", "напиш", "напис", "реализ", "добав", "исправ", "почин",
     "поправ", "перепиш", "перепис", "сгенер", "собер", "собир", "запус", "провер",
     "постро", "набро",
-    # board / housekeeping: очисти(шь), почистить, убери, удали, отмени, закрой
-    "очист", "чист", "убер", "убра", "удал", "отмен", "закро", "разгреб", "разбер",
+)
+# Housekeeping / board verbs whose prefix varies (по-/вы-/при-/у-), so we match
+# them as a SUBSTRING: "чист" hits почистите/очистить/вычистить, "удал" hits
+# удали/поудаляй, "убер"/"убра" hits убери/убрать, "отмен" hits отмени, etc.
+_HOUSEKEEP_SUB_RU = (
+    "чист", "удал", "убер", "убра", "отмен", "закро", "разгреб", "разбер", "снеси",
 )
 
 # Greetings — worth a friendly one-line reply from a single teammate.
@@ -144,11 +148,14 @@ def _norm_hash(text: str) -> int:
 
 def work_intent(text: str) -> bool:
     """Whether the message asks for concrete work (so a permitted agent may use
-    its tools). Whole-word for English, stem-prefix for Russian."""
+    its tools). Whole-word English, stem-prefix Russian, plus substring matching
+    for housekeeping verbs whose prefix varies (почистите / удалите / убери)."""
     tokens = re.findall(r"[a-zа-яё]+", (text or "").lower())
     if any(t in _WORK_HINTS_EN for t in tokens):
         return True
-    return any(tok.startswith(stem) for tok in tokens for stem in _WORK_STEMS_RU)
+    if any(tok.startswith(stem) for tok in tokens for stem in _WORK_STEMS_RU):
+        return True
+    return any(sub in tok for tok in tokens for sub in _HOUSEKEEP_SUB_RU)
 
 
 def detect_addressed(text: str, roster: list[tuple[str, str, str]]) -> Optional[str]:

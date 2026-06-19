@@ -160,7 +160,7 @@ class TelegramManager:
         decides for itself whether to reply. Those who opt in post (a few may, or
         none). A direct work request to one agent goes through the tool path."""
         from src import group_chat as gc
-        from src.graph.team_graph import agroup_decide, agroup_reply
+        from src.graph.team_graph import agroup_decide, agroup_reply, aroute_group_speaker
 
         registry.reload()
         present = [
@@ -173,14 +173,23 @@ class TelegramManager:
         roster = [(s, registry.label(s), registry.get(s).role) for s in present]
         transcript = gc.transcript_text(chat.id)
 
-        # A direct work request to ONE agent -> that agent actually does it (tools).
+        # A work request -> ONE agent actually does it (with tools). If it's
+        # addressed to someone, that's the worker; otherwise pick the most fitting
+        # teammate, so an unaddressed "почистите доску" doesn't fall into the
+        # everyone-stays-silent path.
         addressed = gc.detect_addressed(text, roster)
-        if addressed and addressed in self._agent_apps and gc.work_intent(text):
-            logger.info("group: work request -> %s", addressed)
+        if gc.work_intent(text):
+            worker = addressed if (addressed and addressed in self._agent_apps) else None
+            if worker is None:
+                pick, _why = await aroute_group_speaker(
+                    transcript, roster, gc.last_speaker(chat.id)
+                )
+                worker = pick if (pick and pick in self._agent_apps) else present[0]
+            logger.info("group: work request -> %s", worker)
             reply = await agroup_reply(
-                addressed, transcript, work_intent=True, project=f"group-{chat.id}"
+                worker, transcript, work_intent=True, project=f"group-{chat.id}"
             )
-            await self._group_post(chat, addressed, reply)
+            await self._group_post(chat, worker, reply)
             return
 
         # Otherwise EVERY agent independently decides (its own model call, in parallel).
