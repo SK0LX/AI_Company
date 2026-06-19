@@ -154,6 +154,11 @@ class Settings(BaseSettings):
     # cooldown between any two proactive posts (seconds).
     enable_proactive: bool = False
     team_chat_id: int = 0  # Telegram chat the team posts into (0 = disabled)
+
+    # "Задачник" — a dedicated Telegram chat the task tracker auto-posts the task
+    # lifecycle into (created / delegated / in-progress / done / cancelled), e.g.
+    # "✅ Задача #102 закрыта · исполнитель: … · от: …". 0 = disabled.
+    task_channel_id: int = 0
     proactive_min_interval: int = 30
     proactive_max_per_window: int = 5  # per agent
     proactive_window: int = 300  # seconds for the per-agent rate window

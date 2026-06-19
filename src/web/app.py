@@ -31,6 +31,14 @@ _STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 manager = TelegramManager()
 proactive = None  # ProactiveService, created at startup
 routine_scheduler = None  # RoutineScheduler, created at startup
+task_tracker = None  # TaskTrackerService, created at startup
+
+
+async def _post_tasks(text: str) -> None:
+    """Sender for the Задачник: post into the configured task channel."""
+    from src.config import settings
+
+    await manager.post_to_chat(settings.task_channel_id, text)
 
 
 async def _routine_runner(routine: dict) -> str:
@@ -49,7 +57,7 @@ async def _routine_runner(routine: dict) -> str:
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
-    global proactive, routine_scheduler
+    global proactive, routine_scheduler, task_tracker
     # Create tables, seed the default roles on first run, load the cache.
     registry.setup()
     # Materialize each agent's folder (agents/<slug>/) so skills can live there,
@@ -58,6 +66,7 @@ async def _lifespan(app: FastAPI):
     from src.proactive import ProactiveService
     from src.routines import RoutineScheduler
     from src.skills import skill_loader
+    from src.tasktracker import TaskTrackerService
 
     scaffold_all()
     skill_loader.discover()
@@ -68,9 +77,14 @@ async def _lifespan(app: FastAPI):
     # Recurring jobs that wake the team/agents on a schedule (off unless enabled).
     routine_scheduler = RoutineScheduler(_routine_runner, manager.post_to_team)
     await routine_scheduler.start()
+    # Задачник: auto-post the task lifecycle into a dedicated chat (off unless set).
+    task_tracker = TaskTrackerService(_post_tasks)
+    await task_tracker.start()
     try:
         yield
     finally:
+        if task_tracker is not None:
+            await task_tracker.stop()
         if routine_scheduler is not None:
             await routine_scheduler.stop()
         if proactive is not None:

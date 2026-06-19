@@ -305,18 +305,21 @@ class TelegramManager:
         except Exception:  # noqa: BLE001 - a bad URL must not break the bot
             logger.exception("failed to set Mini App menu button for '%s'", label)
 
-    async def post_to_team(self, text: str) -> None:
-        """Send a message to the configured team chat via the team bot. Used by the
-        proactive service; no-ops if there is no team chat or the bot is down."""
-        from src.config import settings
-
-        chat_id = settings.team_chat_id
+    async def post_to_chat(self, chat_id: int, text: str) -> None:
+        """Send a message to any chat via the team bot. No-ops if the chat id is
+        unset or the team bot is down. A failed post never crashes anything."""
         if not chat_id or self._team_app is None:
             return
         try:
             await self._team_app.bot.send_message(chat_id=chat_id, text=text)
-        except Exception:  # noqa: BLE001 - a failed proactive post must not crash anything
-            logger.exception("failed to post to team chat")
+        except Exception:  # noqa: BLE001
+            logger.exception("failed to post to chat %s", chat_id)
+
+    async def post_to_team(self, text: str) -> None:
+        """Send a message to the configured team chat (used by the proactive service)."""
+        from src.config import settings
+
+        await self.post_to_chat(settings.team_chat_id, text)
 
     async def reconcile_now(self) -> None:
         """Reconcile the running bots with the registry right now.
