@@ -116,10 +116,23 @@ def main() -> None:
         _crud_and_summary()
     finally:
         settings.enable_budget = enable0
-        # tidy up the policies this test created (cost events are scoped to AGENT)
+        # tidy up everything this test wrote so it never pollutes the cost view:
+        # the budget policies AND the synthetic cost events (agent == AGENT).
         for r in budget.list_budgets():
             if r["scope"] == AGENT:
                 budget.delete_budget(r["id"])
+        try:
+            from sqlmodel import select
+
+            from src.db.engine import get_session
+            from src.db.models import CostEvent
+
+            with get_session() as session:
+                for ev in session.exec(select(CostEvent).where(CostEvent.agent == AGENT)).all():
+                    session.delete(ev)
+                session.commit()
+        except Exception:  # noqa: BLE001 - cleanup must never fail the test
+            pass
     print("budget tests: OK")
 
 
