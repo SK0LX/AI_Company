@@ -177,3 +177,81 @@ class AgentSkill(SQLModel, table=True):
     adopted_from: Optional[int] = Field(default=None, foreign_key="agent.id")  # null = owner
     enabled: bool = True
     created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+# --- control plane (2026-06-19 upgrade) -------------------------------------
+
+class CostEvent(SQLModel, table=True):
+    """One model call's token usage and computed cost. Append-only ledger that
+    powers cost reporting and budget hard-stops. ``agent`` is a slug or 'system'."""
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    ts: datetime = Field(default_factory=datetime.utcnow, index=True)
+    agent: str = Field(default="system", index=True)
+    provider: str = ""
+    model: str = ""
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cost_usd: float = 0.0
+    task_id: Optional[int] = Field(default=None, index=True)
+
+
+# Budget scopes/windows kept as plain strings (no enum migrations).
+BUDGET_WINDOWS = ("day", "month", "lifetime")
+
+
+class BudgetPolicy(SQLModel, table=True):
+    """A spend cap. ``scope`` is 'global' or an agent slug; ``window`` is one of
+    BUDGET_WINDOWS. When ``hard_stop`` is on and spend reaches the limit, the
+    scope is blocked until the window resets (or the policy is raised)."""
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    scope: str = Field(default="global", index=True)  # 'global' | <agent-slug>
+    limit_usd: float = 1.0
+    window: str = "day"  # one of BUDGET_WINDOWS
+    warn_percent: int = 80
+    hard_stop: bool = True
+    enabled: bool = True
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+# Routine schedule kinds (computed by hand — no cron dependency).
+ROUTINE_KINDS = ("interval", "daily", "weekly")
+
+
+class Routine(SQLModel, table=True):
+    """A recurring job: on schedule it creates a task and wakes the team or one
+    agent with ``prompt``. ``schedule_value`` meaning depends on ``schedule_kind``:
+    interval=seconds, daily='HH:MM' (UTC), weekly='DOW HH:MM' (0=Mon)."""
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    name: str
+    schedule_kind: str = "interval"  # one of ROUTINE_KINDS
+    schedule_value: str = "3600"
+    prompt: str = ""
+    target: str = "team"  # 'team' | <agent-slug>
+    enabled: bool = True
+    catch_up: bool = False  # run missed slots once (True) or skip to next (False)
+    last_run_at: Optional[datetime] = Field(default=None)
+    next_run_at: Optional[datetime] = Field(default=None, index=True)
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+# Approval kinds + statuses.
+APPROVAL_KINDS = ("shell", "self_modify", "budget_override", "risky_delete")
+APPROVAL_STATUSES = ("pending", "approved", "denied")
+
+
+class Approval(SQLModel, table=True):
+    """A human-in-the-loop decision request. Generalizes the old per-command shell
+    approval into typed, audited approvals."""
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    ts: datetime = Field(default_factory=datetime.utcnow, index=True)
+    kind: str = "shell"  # one of APPROVAL_KINDS
+    summary: str = ""
+    status: str = "pending"  # one of APPROVAL_STATUSES
+    requested_by: str = ""  # agent slug or 'system'
+    decided_by: str = ""  # 'user' once decided
+    reason: str = ""
+    decided_at: Optional[datetime] = Field(default=None)
