@@ -30,11 +30,15 @@ from src.config import settings
 _WORK_HINTS_EN = {
     "code", "build", "create", "write", "implement", "fix", "add", "refactor",
     "run", "make", "generate", "deploy", "test",
+    # board / housekeeping verbs
+    "clear", "clean", "remove", "delete", "tidy", "empty", "cancel", "close",
 }
 _WORK_STEMS_RU = (
     "созда", "сдела", "напиш", "напис", "реализ", "добав", "исправ", "почин",
     "поправ", "перепиш", "перепис", "сгенер", "собер", "собир", "запус", "провер",
     "постро", "набро",
+    # board / housekeeping: очисти(шь), почистить, убери, удали, отмени, закрой
+    "очист", "чист", "убер", "убра", "удал", "отмен", "закро", "разгреб", "разбер",
 )
 
 # Greetings — worth a friendly one-line reply from a single teammate.

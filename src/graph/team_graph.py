@@ -172,6 +172,16 @@ working language). Write `user_note` and `final_answer` in the USER's language \
 (Russian if the user wrote in Russian) — `user_note` is a short, friendly \
 one-liner so the user can follow what the team is doing."""
 
+ROUTING_INSTRUCTIONS += (
+    "\n\nTask board: the user may ask you to inspect, tidy or CLEAR the team's "
+    "TASK BOARD — the kanban they see, with columns new / in_progress / blocked / "
+    "review / done / cancelled. This is NOT a build task and needs no project. "
+    "Delegate it to ONE specialist (they can view the board, and most can manage "
+    "it via board tools) with a clear instruction, e.g. 'clear the whole board "
+    "(delete every task)' or 'cancel all done tasks'. The specialist uses "
+    "board_overview / board_clear / board_set_status / board_delete to do it."
+)
+
 if settings.enable_shell_execution:
     ROUTING_INSTRUCTIONS += (
         "\n\nExecution: the team CAN run real commands (installs, builds and "
@@ -532,11 +542,12 @@ def _perm(role: str, key: str) -> bool:
 
 def _uses_tools(role: str) -> bool:
     """Whether a specialist runs as a tool-enabled ReAct agent: a built-in tool
-    role, or a custom agent granted file/shell permissions in the panel."""
+    role, or a custom agent granted file/shell/board permissions in the panel."""
     return (
         role in _FILE_TOOL_ROLES
         or _perm(role, "can_edit_files")
         or _perm(role, "can_run_shell")
+        or _perm(role, "can_manage_board")
     )
 
 
@@ -555,6 +566,10 @@ def _tool_agent(role: str):
     from langgraph.prebuilt import create_react_agent
 
     from src.agents.tools import (
+        board_clear,
+        board_delete,
+        board_overview,
+        board_set_status,
         delete_file,
         list_files,
         list_memory,
@@ -593,6 +608,23 @@ def _tool_agent(role: str):
             "decisions and WHY, the file map (path — purpose), setup/run/test steps, "
             "and gotchas — so teammates and future runs can read it."
         )
+    # Task board: every tool agent can VIEW it; mutations need can_manage_board.
+    board_tools = [board_overview]
+    if _perm(role, "can_manage_board"):
+        board_tools += [board_set_status, board_delete, board_clear]
+        base_prompt += (
+            "\n\nYou can VIEW and MANAGE the team's TASK BOARD — the kanban the user "
+            "sees, with columns new / in_progress / blocked / review / done / "
+            "cancelled. Tools: board_overview (see counts), board_set_status (move a "
+            "task), board_delete (remove one), board_clear (tidy/empty the board — "
+            "mode='delete' removes tasks permanently, mode='cancel' moves them to the "
+            "cancelled column). When the user asks to inspect, tidy or CLEAR the "
+            "board, call board_overview first, then act."
+        )
+    else:
+        base_prompt += (
+            "\n\nYou can VIEW the team's task board with board_overview (read-only)."
+        )
     can_shell = settings.enable_shell_execution and _perm(role, "can_run_shell")
     shell_note = (
         "\n\nYou can run REAL commands with run_shell in the project folder "
@@ -606,7 +638,7 @@ def _tool_agent(role: str):
     )
 
     if role == "tester":
-        tools: list = [list_files, read_file, write_file] + skill_tools + memory_tools
+        tools: list = [list_files, read_file, write_file] + skill_tools + memory_tools + board_tools
         if can_shell:
             tools.append(run_shell)
         extra = (
@@ -619,7 +651,7 @@ def _tool_agent(role: str):
         return create_react_agent(model, tools=tools, prompt=base_prompt + extra)
 
     if role in _CODE_REVIEW_ROLES:
-        tools = [list_files, read_file, write_file] + skill_tools + memory_tools
+        tools = [list_files, read_file, write_file] + skill_tools + memory_tools + board_tools
         extra = (
             "\n\nYou are reviewing code that is ALREADY saved in this project's "
             "folder. First call list_files, then read_file on the files in your "
@@ -643,7 +675,7 @@ def _tool_agent(role: str):
 
     if role == "reviewer":
         tools = ([list_files, read_file, write_file, move_file, delete_file]
-                 + skill_tools + memory_tools)
+                 + skill_tools + memory_tools + board_tools)
         extra = (
             "\n\nYou are reviewing an EXISTING project that is ALREADY on disk in "
             "this project's folder. First call list_files to see everything that "
@@ -661,7 +693,7 @@ def _tool_agent(role: str):
 
     if settings.enable_self_modify and _is_self_editor(role):
         tools = ([list_files, read_file, write_file, move_file, delete_file]
-                 + skill_tools + memory_tools)
+                 + skill_tools + memory_tools + board_tools)
         if can_shell:
             tools.append(run_shell)
         if settings.enable_code_execution:
@@ -701,7 +733,7 @@ def _tool_agent(role: str):
         return create_react_agent(model, tools=tools, prompt=base_prompt + extra)
 
     # Default: builders (developer/frontend) and custom agents with file perms.
-    tools = [write_file, read_file, list_files] + skill_tools + memory_tools
+    tools = [write_file, read_file, list_files] + skill_tools + memory_tools + board_tools
     extra = (
         "\n\nYou have a real filesystem workspace and you are ALREADY inside this "
         "project's folder. Use write_file to SAVE every file you produce, with "

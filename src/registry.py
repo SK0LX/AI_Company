@@ -65,6 +65,8 @@ def _default_permissions(slug: str) -> list[tuple[str, str]]:
     if slug == "ceo":
         perms.append(("delegate_to", json.dumps("*")))
         perms.append(("can_modify_agents", "true"))
+    # Every built-in teammate may inspect and tidy the shared task board.
+    perms.append(("can_manage_board", "true"))
     return perms
 
 
@@ -80,6 +82,7 @@ class Registry:
         self.seed_if_empty()
         self._ensure_ru_names()
         self._ensure_builtin_roles()
+        self._ensure_board_permission()
         self.reload()
 
     def _ensure_ru_names(self) -> None:
@@ -126,6 +129,26 @@ class Registry:
                 )
                 session.commit()
                 logger.info("Registry added built-in role %r", slug)
+
+    def _ensure_board_permission(self) -> None:
+        """Backfill ``can_manage_board`` onto the built-in roles for an already-
+        seeded DB, so the team can tidy the task board without a reseed. Custom
+        agents get it via the admin panel checkbox."""
+        builtin = {CEO_SLUG, *SPECIALIST_PROMPTS.keys()}
+        with get_session() as session:
+            for slug in builtin:
+                agent = session.exec(select(Agent).where(Agent.slug == slug)).first()
+                if not agent:
+                    continue
+                has = session.exec(
+                    select(AgentPermission)
+                    .where(AgentPermission.agent_id == agent.id)
+                    .where(AgentPermission.key == "can_manage_board")
+                ).first()
+                if not has:
+                    session.add(AgentPermission(
+                        agent_id=agent.id, key="can_manage_board", value="true"))
+            session.commit()
 
     def seed_if_empty(self) -> None:
         with get_session() as session:

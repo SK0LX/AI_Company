@@ -24,7 +24,15 @@ from sqlmodel import select
 
 from src import bus as busmod
 from src.db.engine import get_session
-from src.db.models import AuditLog, Delegation, HelpRequest, Message, Task, TaskEvent
+from src.db.models import (
+    TASK_STATUSES,
+    AuditLog,
+    Delegation,
+    HelpRequest,
+    Message,
+    Task,
+    TaskEvent,
+)
 from src.registry import registry
 
 logger = logging.getLogger(__name__)
@@ -337,6 +345,57 @@ def get_task(task_id: int) -> Optional[dict]:
             "created_at": t.created_at.isoformat(),
             "updated_at": t.updated_at.isoformat(),
         }
+
+
+# --- board management (agents can tidy the kanban the user sees) -------------
+
+def board_overview() -> dict:
+    """Counts per column + total, for an agent to see the board at a glance."""
+    with get_session() as session:
+        tasks = session.exec(select(Task)).all()
+    counts = {st: 0 for st in TASK_STATUSES}
+    for t in tasks:
+        counts[t.status] = counts.get(t.status, 0) + 1
+    return {"total": len(tasks), "by_status": counts}
+
+
+def delete_task(task_id: int) -> bool:
+    """Permanently remove ONE task and its timeline events. Returns False if missing."""
+    with get_session() as session:
+        task = session.get(Task, task_id)
+        if not task:
+            return False
+        for ev in session.exec(select(TaskEvent).where(TaskEvent.task_id == task_id)).all():
+            session.delete(ev)
+        session.delete(task)
+        session.commit()
+    return True
+
+
+def clear_board(*, status: Optional[str] = None, mode: str = "cancel") -> int:
+    """Bulk-tidy the board. ``mode='cancel'`` moves matched tasks to the
+    'cancelled' column (reversible); ``mode='delete'`` removes them and their
+    events permanently. ``status`` limits to one column (e.g. 'done'); None = all.
+    Returns how many tasks were affected."""
+    with get_session() as session:
+        stmt = select(Task)
+        if status:
+            stmt = stmt.where(Task.status == status)
+        tasks = session.exec(stmt).all()
+        n = len(tasks)
+        if mode == "delete":
+            for t in tasks:
+                for ev in session.exec(select(TaskEvent).where(TaskEvent.task_id == t.id)).all():
+                    session.delete(ev)
+                session.delete(t)
+        else:  # cancel
+            now = datetime.utcnow()
+            for t in tasks:
+                t.status = "cancelled"
+                t.updated_at = now
+                session.add(t)
+        session.commit()
+    return n
 
 
 def task_timeline(task_id: int) -> list[dict]:

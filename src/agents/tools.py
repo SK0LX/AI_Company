@@ -353,6 +353,65 @@ def list_files(subdir: str = "") -> str:
     return "\n".join(sorted(found))
 
 
+# --- task board (the kanban the user sees) ----------------------------------
+#
+# These let an agent inspect and tidy the team's task board. Reading is open;
+# mutations require the ``can_manage_board`` permission.
+
+@tool
+def board_overview() -> str:
+    """See the team's TASK BOARD (the kanban the user sees): how many tasks are in
+    each column and the total. Columns: new, in_progress, blocked, review, done,
+    cancelled. Call this first when asked about or to tidy the board."""
+    from src import collab
+
+    o = collab.board_overview()
+    lines = [f"Доска задач — всего {o['total']}:"]
+    lines += [f"  {st}: {n}" for st, n in o["by_status"].items()]
+    return "\n".join(lines)
+
+
+@tool
+@requires("can_manage_board")
+def board_set_status(task_id: int, status: str) -> str:
+    """Move ONE task to a column. status ∈ new|in_progress|blocked|review|done|
+    cancelled."""
+    from src.db.models import TASK_STATUSES
+
+    if status not in TASK_STATUSES:
+        return f"[bad status {status!r}; use one of {TASK_STATUSES}]"
+    from src import collab
+
+    collab.set_task_status(task_id, status, actor=_current_agent.get() or None)
+    return f"[task {task_id} -> {status}]"
+
+
+@tool
+@requires("can_manage_board")
+def board_delete(task_id: int) -> str:
+    """Permanently delete ONE task (and its timeline) from the board."""
+    from src import collab
+
+    return f"[deleted task {task_id}]" if collab.delete_task(task_id) else f"[not found: {task_id}]"
+
+
+@tool
+@requires("can_manage_board")
+def board_clear(status: str = "", mode: str = "cancel") -> str:
+    """Bulk-tidy the board when asked. ``mode='cancel'`` moves tasks to the
+    'cancelled' column (reversible); ``mode='delete'`` removes them permanently —
+    use delete when the user wants the board emptied / tasks gone. ``status``
+    limits to one column (e.g. 'done'); empty = ALL columns."""
+    from src import collab
+
+    st = (status or "").strip() or None
+    mode = "delete" if mode == "delete" else "cancel"
+    n = collab.clear_board(status=st, mode=mode)
+    verb = "удалено" if mode == "delete" else "перенесено в «Отменено»"
+    where = f" в колонке «{st}»" if st else ""
+    return f"[{verb} задач: {n}{where}]"
+
+
 # --- Obsidian-style wiki (long-term team knowledge base) --------------------
 #
 # A separate Markdown vault (``settings.wiki_dir``) the team uses as long-term
