@@ -1,0 +1,39 @@
+# AI Office — 24/7 deployment. Put your secrets in .env (see .env.docker.example),
+# then:  docker compose up -d --build
+services:
+  aiagents:
+    build: .
+    image: aiagents:latest
+    restart: unless-stopped
+    env_file:
+      - .env                       # TELEGRAM_BOT_TOKEN, ANTHROPIC_API_KEY / OPENROUTER_API_KEY, …
+    environment:
+      ADMIN_HOST: "0.0.0.0"
+      ADMIN_PORT: "8100"
+      WORKSPACE_DIR: /app/workspace
+      WIKI_DIR: /app/wiki
+      DB_PATH: /app/data/memory.sqlite
+    volumes:
+      - aiagents_data:/app/data        # SQLite DB, secret.key, quota.json — persists
+      - aiagents_workspace:/app/workspace
+      - aiagents_wiki:/app/wiki
+    ports:
+      - "127.0.0.1:8100:8100"          # dashboard local-only; expose publicly via Caddy
+
+  # Optional TLS reverse proxy. Uncomment, set your domain in Caddyfile, open 80/443.
+  # caddy:
+  #   image: caddy:2-alpine
+  #   restart: unless-stopped
+  #   ports: ["80:80", "443:443"]
+  #   volumes:
+  #     - ./Caddyfile:/etc/caddy/Caddyfile:ro
+  #     - caddy_data:/data
+  #     - caddy_config:/config
+  #   depends_on: [aiagents]
+
+volumes:
+  aiagents_data:
+  aiagents_workspace:
+  aiagents_wiki:
+  # caddy_data:
+  # caddy_config:

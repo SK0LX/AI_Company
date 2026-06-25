@@ -1,0 +1,17 @@
+.venv/
+.git/
+__pycache__/
+**/__pycache__/
+*.pyc
+*.pyo
+data/
+.env
+.env.*
+!.env.docker.example
+node_modules/
+.claude/
+screenshots/
+.DS_Store
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/

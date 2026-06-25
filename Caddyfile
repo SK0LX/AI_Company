@@ -1,0 +1,6 @@
+# TLS reverse proxy for the dashboard / Mini App (optional).
+# Replace ai.example.com with your domain (its A record must point at the VPS).
+# Caddy auto-provisions a Let's Encrypt certificate.
+ai.example.com {
+    reverse_proxy aiagents:8100
+}
