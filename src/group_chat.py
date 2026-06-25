@@ -158,6 +158,41 @@ def work_intent(text: str) -> bool:
     return any(sub in tok for tok in tokens for sub in _HOUSEKEEP_SUB_RU)
 
 
+# Cheap per-role keyword hints for the relevance gate (0 tokens). Keyed by the
+# canonical role; a message hitting these makes that agent a candidate to "decide".
+ROLE_KEYWORDS: dict[str, tuple[str, ...]] = {
+    "frontend": ("ui", "css", "экран", "верст", "компонент", "фронт", "кнопк", "react", "интерфейс"),
+    "developer": ("api", "бэкенд", "backend", "сервер", "база", "эндпоинт", "endpoint", "код"),
+    "system_analyst": ("архитектур", "требован", "схем", "интеграц", "контракт", "модель данн"),
+    "business_analyst": ("польз", "бизнес", "метрик", "user stor", "требован", "ценност"),
+    "tester": ("тест", "баг", "bug", "qa", "проверк", "падает", "ошибк"),
+    "designer": ("дизайн", "ux", "макет", "вайрфрейм", "прототип"),
+    "reviewer": ("ревью", "review", "структур", "рефактор"),
+    "maintainer": ("свой код", "себя", "рефактор", "почини себя", "доск"),
+}
+
+
+def relevance_prefilter(
+    text: str, roster: list[tuple[str, str, str]], *, addressed: Optional[str] = None
+) -> list[str]:
+    """0-token relevance gate: which agents are even worth an LLM 'do you respond?'
+    call. Cuts N calls down to the plausibly-relevant ones (or nobody) so we don't
+    ask all 6 for every line. Heuristic only — the LLM decide() comes after."""
+    addressed = addressed if addressed is not None else detect_addressed(text, roster)
+    if addressed:
+        return [addressed]
+    low = (text or "").lower()
+    matched = [slug for slug, _name, role in roster
+               if any(k in low for k in ROLE_KEYWORDS.get(role, ()))]
+    if matched:
+        return matched
+    # Broad signals (greeting / "to everyone" / a question / a work ask with no
+    # clear owner) → everyone may consider; otherwise stay cheap and ask nobody.
+    if is_greeting(text) or is_to_everyone(text) or is_question(text) or work_intent(text):
+        return [slug for slug, _name, _role in roster]
+    return []
+
+
 def detect_addressed(text: str, roster: list[tuple[str, str, str]]) -> Optional[str]:
     """If a teammate is named/addressed in ``text``, return their slug. Matches the
     slug, role word, or a display-name token — on WORD BOUNDARIES, so 'protesters'

@@ -81,6 +81,11 @@ class Task(SQLModel, table=True):
     created_by: Optional[int] = Field(default=None, foreign_key="agent.id")  # agent or null=user
     priority: str = "обычный"  # обычный | высокий | низкий (free-text)
     complexity: int = 1  # 1..5, a rough effort estimate
+    # Atomic claim (v3 pull-coordination): an agent "checks out" a task via a
+    # compare-and-set so two agents can never grab the same one (see src/locks.py).
+    claimed_by: str = ""  # agent slug that holds the task, "" = free
+    claimed_at: Optional[datetime] = Field(default=None)
+    lock_token: str = ""  # opaque token of the current claim
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 
@@ -257,3 +262,17 @@ class Approval(SQLModel, table=True):
     decided_by: str = ""  # 'user' once decided
     reason: str = ""
     decided_at: Optional[datetime] = Field(default=None)
+
+
+class ResourceLock(SQLModel, table=True):
+    """An advisory lock over an arbitrary resource key (e.g. ``repo:proj``,
+    ``file:src/app.py``, ``area:frontend``) so parallel agents don't step on each
+    other. Acquired/released atomically (compare-and-set) in :mod:`src.locks`.
+    ``expires_at`` (TTL) frees a lock whose holder died without releasing."""
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    key: str = Field(index=True, unique=True)
+    agent: str = ""  # slug of the holder
+    token: str = ""  # opaque token of this acquisition
+    acquired_at: datetime = Field(default_factory=datetime.utcnow)
+    expires_at: Optional[datetime] = Field(default=None, index=True)

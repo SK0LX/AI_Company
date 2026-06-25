@@ -566,11 +566,17 @@ def _tool_agent(role: str):
     from langgraph.prebuilt import create_react_agent
 
     from src.agents.tools import (
+        board_claim,
         board_clear,
         board_delete,
         board_overview,
+        board_release,
         board_set_status,
+        budget_remaining,
         delete_file,
+        lock_acquire,
+        lock_release,
+        lock_who,
         list_files,
         list_memory,
         move_file,
@@ -608,8 +614,17 @@ def _tool_agent(role: str):
             "decisions and WHY, the file map (path — purpose), setup/run/test steps, "
             "and gotchas — so teammates and future runs can read it."
         )
-    # Task board: every tool agent can VIEW it; mutations need can_manage_board.
-    board_tools = [board_overview]
+    # Task board: every tool agent can VIEW it + COORDINATE (claim/lock/budget);
+    # mutating the board (status/delete/clear) needs can_manage_board.
+    board_tools = [board_overview, board_claim, board_release,
+                   lock_acquire, lock_release, lock_who, budget_remaining]
+    base_prompt += (
+        "\n\nCOORDINATION — never double-work with other agents: BEFORE you start on "
+        "a shared task or project, CLAIM it (board_claim) or lock the resource "
+        "(lock_acquire 'repo:<x>' / 'file:<y>'). If it's busy, take another or wait; "
+        "board_release / lock_release when done. Check budget_remaining before "
+        "expensive work and self-throttle near the limit."
+    )
     if _perm(role, "can_manage_board"):
         board_tools += [board_set_status, board_delete, board_clear]
         base_prompt += (

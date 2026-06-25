@@ -91,6 +91,18 @@ def main() -> None:
     assert gc.should_consider(CHAT, "", addressed=False, is_followup=True, rng=random.Random(1))      # r≈0.13 < 0.5
     assert not gc.should_consider(CHAT, "", addressed=False, is_followup=True, rng=random.Random(0))  # r≈0.84 ≥ 0.5
 
+    # relevance gate (0-token prefilter): who's even worth an LLM decide() call
+    # addressed -> just that one
+    assert gc.relevance_prefilter("developer, глянь", ROSTER) == ["developer"]
+    # role-keyword match -> only the matching role(s)
+    assert gc.relevance_prefilter("поправь css на экране", ROSTER) == ["frontend"]
+    assert gc.relevance_prefilter("нужен новый api эндпоинт", ROSTER) == ["developer"]
+    # broad (greeting / question / to-everyone) -> everyone may consider
+    assert set(gc.relevance_prefilter("всем привет", ROSTER)) == {"developer", "frontend", "tester"}
+    assert len(gc.relevance_prefilter("что по статусу?", ROSTER)) == 3
+    # plain statement, nobody specific, not broad -> cheap skip (nobody)
+    assert gc.relevance_prefilter("ну такое себе", ROSTER) == []
+
     gc._states.pop(CHAT, None)
     print("group chat tests: OK")
 

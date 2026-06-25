@@ -192,13 +192,20 @@ class TelegramManager:
             await self._group_post(chat, worker, reply)
             return
 
-        # Otherwise EVERY agent independently decides (its own model call, in parallel).
-        logger.info("group: %d agents independently deciding on %r", len(present), text[:60])
+        # Relevance gate v2 (0-token heuristic): only plausibly-relevant agents
+        # incur an LLM "do you respond?" call — don't ask all 6 for every line.
+        candidates = gc.relevance_prefilter(text, roster, addressed=addressed)
+        deciders = [s for s in present if s in candidates]
+        if not deciders:
+            logger.info("group: relevance gate -> nobody (cheap skip)")
+            return
+        logger.info("group: %d/%d agents pass relevance gate on %r",
+                    len(deciders), len(present), text[:50])
         decisions = await asyncio.gather(
-            *[agroup_decide(s, transcript) for s in present], return_exceptions=True
+            *[agroup_decide(s, transcript) for s in deciders], return_exceptions=True
         )
         responders = [
-            (s, d[1]) for s, d in zip(present, decisions)
+            (s, d[1]) for s, d in zip(deciders, decisions)
             if isinstance(d, tuple) and d[0] and d[1]
         ]
         logger.info("group: responders = %s", [s for s, _ in responders] or "(nobody)")

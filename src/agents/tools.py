@@ -412,6 +412,79 @@ def board_clear(status: str = "", mode: str = "cancel") -> str:
     return f"[{verb} задач: {n}{where}]"
 
 
+# --- coordination: atomic claim + resource locks (v3 pull-model) ------------
+#
+# Before working on a shared task/project, an agent CLAIMS it so no one else
+# double-works. "Ask the CEO if anyone's on it" == call board_claim and read the
+# result. Locks are advisory keys ('repo:x', 'file:y', 'area:frontend').
+
+@tool
+def board_claim(task_id: int) -> str:
+    """Atomically claim a task BEFORE working on it, so no other agent works it in
+    parallel. Returns whether you got it; if busy, pick another task or wait."""
+    from src import locks
+
+    agent = _current_agent.get() or "system"
+    if locks.claim_task(task_id, agent):
+        return f"[claimed task {task_id} — it's yours, go]"
+    holder = locks.task_holder(task_id)
+    return f"[busy: task {task_id} is held by {holder or 'someone'} — take another or wait]"
+
+
+@tool
+def board_release(task_id: int) -> str:
+    """Release a task you claimed (when done or handing off)."""
+    from src import locks
+
+    agent = _current_agent.get() or "system"
+    return (f"[released task {task_id}]" if locks.release_task(task_id, agent)
+            else f"[you don't hold task {task_id}]")
+
+
+@tool
+def lock_acquire(key: str) -> str:
+    """Acquire an advisory lock on a resource before editing it, so parallel agents
+    don't clash. Examples: 'repo:my-project', 'file:src/app.py', 'area:frontend'."""
+    from src import locks
+
+    agent = _current_agent.get() or "system"
+    if locks.acquire_lock(key, agent):
+        return f"[locked {key} — safe to edit]"
+    return f"[busy: {key} held by {locks.who_holds(key) or 'someone'} — wait]"
+
+
+@tool
+def lock_release(key: str) -> str:
+    """Release a resource lock you hold."""
+    from src import locks
+
+    agent = _current_agent.get() or "system"
+    return f"[unlocked {key}]" if locks.release_lock(key, agent=agent) else f"[not held: {key}]"
+
+
+@tool
+def lock_who(key: str) -> str:
+    """Who, if anyone, holds the lock on a resource (read-only check)."""
+    from src import locks
+
+    holder = locks.who_holds(key)
+    return f"[{key}: held by {holder}]" if holder else f"[{key}: free]"
+
+
+@tool
+def budget_remaining() -> str:
+    """Your current budget status (spent vs limit). Check before expensive work and
+    self-throttle when near the limit."""
+    from src import budget
+
+    agent = _current_agent.get() or "system"
+    g = budget.gate(agent)
+    if not g.get("limit"):
+        return "[no budget limit set — spend responsibly]"
+    return (f"[budget {g['scope']}/{g['window']}: spent ${g['spent']:.2f} / "
+            f"${g['limit']:.2f} — status {g['status']}]")
+
+
 # --- Obsidian-style wiki (long-term team knowledge base) --------------------
 #
 # A separate Markdown vault (``settings.wiki_dir``) the team uses as long-term
