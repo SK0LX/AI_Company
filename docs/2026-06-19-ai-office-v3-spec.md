@@ -153,7 +153,7 @@ agent → board.claim(resource) → CAS UPDATE → rowcount?
 ## 14. Фазы реализации
 - **Ф0 (ресёрч, до Ф2):** проверить runtime-предположение §4 (подписка/конкурентность/ToS).
 - **Ф1 (на текущем движке, быстро):** атомарный claim/`resource_lock` + апгрейд group-decide до relevance-gate v2 + reply/act-tool. Проверяет паттерн «дёшево решить → адресно сделать → claim» без смены движка.
-- **Ф2 (пилот рантайма):** один Agent Worker на Claude SDK headless под подпиской.
+- **Ф2 (автономный pull-work) ✅ СДЕЛАНО:** агенты сами берут с доски НЕЗАНЯТЫЕ задачи своей зоны (relevance по ключевым словам роли), **атомарно клеймят** и делают — `src/autowork.py` (`AutoWorkService`, heartbeat, budget-gate, cap, `enable_autowork`). Рантайм остаётся текущим (langchain + Anthropic API — после Ф0 свап на Claude Agent SDK даёт мало: langchain уже делает агентный tool-loop). Свап на SDK — опционально позже.
 - **Ф3 (масштаб):** N воркеров в Docker + Gateway + межагентная шина claim/release.
 - **Ф4 (прод):** деплой 24/7 + Android/веб-клиент (см. отдельное ТЗ android-app-design).
 

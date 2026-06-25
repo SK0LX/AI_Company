@@ -112,6 +112,14 @@ class Settings(BaseSettings):
     enable_routines: bool = False
     routines_tick_seconds: int = 30
 
+    # Autonomous pull-work (v3): on a heartbeat, idle agents pull UNCLAIMED tasks
+    # in their area off the board, atomically claim them, and do the work — the
+    # team self-organizes instead of waiting to be delegated to. OFF by default
+    # (it spends API budget on its own). max_concurrent caps simultaneous jobs.
+    enable_autowork: bool = False
+    autowork_tick_seconds: int = 60
+    autowork_max_concurrent: int = 2
+
     # Stream the internal agent-to-agent chatter (CEO delegations + each
     # specialist's reply) into the chat, not just the final answer.
     show_team_chatter: bool = True

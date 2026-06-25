@@ -34,11 +34,21 @@ routine_scheduler = None  # RoutineScheduler, created at startup
 task_tracker = None  # TaskTrackerService, created at startup
 
 
+autowork = None  # AutoWorkService, created at startup
+
+
 async def _post_tasks(text: str) -> None:
     """Sender for the Задачник: post into the configured task channel."""
     from src.config import settings
 
     await manager.post_to_chat(settings.task_channel_id, text)
+
+
+async def _autowork_runner(slug: str, task_id: int, text: str) -> str:
+    """Run one autonomously-claimed task through the owning specialist."""
+    from src.graph.team_graph import arun_specialist
+
+    return await arun_specialist(slug, text, project=f"autowork-{task_id}")
 
 
 async def _routine_runner(routine: dict) -> str:
@@ -57,7 +67,7 @@ async def _routine_runner(routine: dict) -> str:
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
-    global proactive, routine_scheduler, task_tracker
+    global proactive, routine_scheduler, task_tracker, autowork
     # Create tables, seed the default roles on first run, load the cache.
     registry.setup()
     # Materialize each agent's folder (agents/<slug>/) so skills can live there,
@@ -66,6 +76,7 @@ async def _lifespan(app: FastAPI):
     from src.proactive import ProactiveService
     from src.routines import RoutineScheduler
     from src.skills import skill_loader
+    from src.autowork import AutoWorkService
     from src.tasktracker import TaskTrackerService
 
     scaffold_all()
@@ -80,9 +91,14 @@ async def _lifespan(app: FastAPI):
     # Задачник: auto-post the task lifecycle into a dedicated chat (off unless set).
     task_tracker = TaskTrackerService(_post_tasks)
     await task_tracker.start()
+    # Autonomous pull-work: idle agents claim+do unclaimed board tasks (off by default).
+    autowork = AutoWorkService(_autowork_runner, manager.post_to_team)
+    await autowork.start()
     try:
         yield
     finally:
+        if autowork is not None:
+            await autowork.stop()
         if task_tracker is not None:
             await task_tracker.stop()
         if routine_scheduler is not None:
