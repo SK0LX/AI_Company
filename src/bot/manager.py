@@ -328,6 +328,22 @@ class TelegramManager:
 
         await self.post_to_chat(settings.team_chat_id, text)
 
+    async def post_as(self, slug: str, chat_id: int, text: str) -> None:
+        """Send a message AS a specific agent — via its OWN bot, so it shows up as
+        that agent in the chat. Falls back to the team bot if the agent has no
+        personal bot. Used by the outbox to deliver the `say` tool."""
+        if not chat_id:
+            return
+        entry = self._agent_apps.get(slug)
+        bot = entry[1].bot if entry else (self._team_app.bot if self._team_app else None)
+        if bot is None:
+            return
+        try:
+            sent = await bot.send_message(chat_id=chat_id, text=text)
+            self._seen_msgs.append((chat_id, sent.message_id))  # ignore our own echo
+        except Exception:  # noqa: BLE001 - a failed agent post must not crash anything
+            logger.exception("post_as %s failed", slug)
+
     async def reconcile_now(self) -> None:
         """Reconcile the running bots with the registry right now.
 

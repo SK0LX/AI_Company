@@ -472,6 +472,18 @@ def lock_who(key: str) -> str:
 
 
 @tool
+def say(text: str) -> str:
+    """Speak in the TEAM CHAT as YOURSELF (your own Telegram bot), mid-work. Use it
+    to tell the user what you're doing, or to address a teammate by name — e.g.
+    '@developer, нужен endpoint /react на :3006'. Delivered to Telegram from your
+    bot, so it shows up as you."""
+    from src import outbox
+
+    agent = _current_agent.get() or "system"
+    return "[отправлено в чат]" if outbox.enqueue_say(agent, text) else "[пустое сообщение]"
+
+
+@tool
 def budget_remaining() -> str:
     """Your current budget status (spent vs limit). Check before expensive work and
     self-throttle when near the limit."""

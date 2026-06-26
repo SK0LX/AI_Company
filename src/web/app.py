@@ -32,6 +32,7 @@ manager = TelegramManager()
 proactive = None  # ProactiveService, created at startup
 routine_scheduler = None  # RoutineScheduler, created at startup
 task_tracker = None  # TaskTrackerService, created at startup
+outbox = None  # OutboxService, created at startup
 
 
 autowork = None  # AutoWorkService, created at startup
@@ -67,12 +68,13 @@ async def _routine_runner(routine: dict) -> str:
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
-    global proactive, routine_scheduler, task_tracker, autowork
+    global proactive, routine_scheduler, task_tracker, autowork, outbox
     # Create tables, seed the default roles on first run, load the cache.
     registry.setup()
     # Materialize each agent's folder (agents/<slug>/) so skills can live there,
     # then discover + register the skills found in those folders.
     from src.agent_fs import scaffold_all
+    from src.outbox import OutboxService
     from src.proactive import ProactiveService
     from src.routines import RoutineScheduler
     from src.skills import skill_loader
@@ -94,9 +96,14 @@ async def _lifespan(app: FastAPI):
     # Autonomous pull-work: idle agents claim+do unclaimed board tasks (off by default).
     autowork = AutoWorkService(_autowork_runner, manager.post_to_team)
     await autowork.start()
+    # Agent → Telegram outbox: deliver `say` messages via each agent's own bot.
+    outbox = OutboxService(manager.post_as)
+    await outbox.start()
     try:
         yield
     finally:
+        if outbox is not None:
+            await outbox.stop()
         if autowork is not None:
             await autowork.stop()
         if task_tracker is not None:

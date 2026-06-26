@@ -585,6 +585,7 @@ def _tool_agent(role: str):
         run_python,
         run_shell,
         save_memory,
+        say,
         search_memory,
         write_file,
     )
@@ -617,13 +618,15 @@ def _tool_agent(role: str):
     # Task board: every tool agent can VIEW it + COORDINATE (claim/lock/budget);
     # mutating the board (status/delete/clear) needs can_manage_board.
     board_tools = [board_overview, board_claim, board_release,
-                   lock_acquire, lock_release, lock_who, budget_remaining]
+                   lock_acquire, lock_release, lock_who, budget_remaining, say]
     base_prompt += (
         "\n\nCOORDINATION — never double-work with other agents: BEFORE you start on "
         "a shared task or project, CLAIM it (board_claim) or lock the resource "
         "(lock_acquire 'repo:<x>' / 'file:<y>'). If it's busy, take another or wait; "
         "board_release / lock_release when done. Check budget_remaining before "
-        "expensive work and self-throttle near the limit."
+        "expensive work and self-throttle near the limit. Use say('…') to speak in "
+        "the team chat as yourself — address a teammate by name when you need "
+        "something from them (e.g. say('@developer, нужен endpoint /react'))."
     )
     if _perm(role, "can_manage_board"):
         board_tools += [board_set_status, board_delete, board_clear]

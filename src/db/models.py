@@ -115,6 +115,9 @@ class Message(SQLModel, table=True):
     kind: str  # DELEGATE|ACCEPT|DECLINE|HELP_REQUEST|HELP_RESULT|STATUS|CHAT
     text: str = ""
     meta_json: str = "{}"
+    # Outbox flag: a CHAT message an agent wants delivered to Telegram. The gateway's
+    # OutboxService drains unsent rows and sends them via the from-agent's own bot.
+    sent: bool = Field(default=False, index=True)
 
 
 class Delegation(SQLModel, table=True):
