@@ -42,9 +42,17 @@ def main() -> None:
         assert T._self_edit_protected("id_rsa")
         assert T._self_edit_protected(".git/config")
         assert T._self_edit_protected("data/app.sqlite")
-        # legit source must NOT be blocked (no broad 'password'/'token' substring)
+        # protected NAME used as a directory must not smuggle a write past a
+        # basename-only check (every path component is checked)
+        assert T._self_edit_protected(".env/apikey.txt")
+        assert T._self_edit_protected(".env/.git/hooks/pre-commit")
+        assert T._self_edit_protected("config/.env/value")
+        assert T._self_edit_protected("vendor/.git/config")   # .git at any depth
+        # legit source must NOT be blocked (no broad 'password'/'token' substring,
+        # and a `data` folder deeper in the tree is fine — only repo-root data/)
         assert not T._self_edit_protected("src/password_hashing.py")
         assert not T._self_edit_protected("src/auth/token_service.py")
+        assert not T._self_edit_protected("src/data/models.py")
         assert not T._self_edit_protected("README.md")
 
         # _deny_protected only bites in self-edit mode

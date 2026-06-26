@@ -115,6 +115,19 @@ def _tools() -> None:
         collab.delete_task(tid)
 
 
+def _idempotent_claim_token() -> None:
+    """Re-claiming a task you already hold returns the SAME token (no orphaning)."""
+    tid = collab.create_task("ut-idem", created_by="ceo")
+    try:
+        tok1 = locks.claim_task(tid, "developer")
+        tok2 = locks.claim_task(tid, "developer")
+        assert tok1 and tok1 == tok2, "re-claim must return the original token"
+        # the original handle still releases it
+        assert locks.release_task(tid, "developer", token=tok1) is True
+    finally:
+        collab.delete_task(tid)
+
+
 def _release_token() -> None:
     """release_task with a token is compare-and-set: a stale token can't release."""
     tid = collab.create_task("ut-token", created_by="ceo")
@@ -156,6 +169,7 @@ def _resource_lock_race_insert() -> None:
 def main() -> None:
     registry.setup()
     _task_claim()
+    _idempotent_claim_token()
     _release_token()
     _resource_lock()
     _resource_lock_race_insert()

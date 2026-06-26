@@ -43,9 +43,33 @@ def main() -> None:
             assert c.post("/api/budgets", json=body).status_code != 401
 
         _rate_limit(body)
+        _ws_auth()
     finally:
         settings.api_token = prev
     print("api auth tests: OK")
+
+
+def _ws_auth() -> None:
+    """The events WebSocket requires the token (or initData) when api_token is set."""
+    from starlette.websockets import WebSocketDisconnect
+
+    settings.api_token = "ws-secret-token"
+    try:
+        with app_client() as c:
+            # no token -> the handler closes before accept
+            rejected = False
+            try:
+                with c.websocket_connect("/ws/events") as ws:
+                    ws.receive_text()
+            except WebSocketDisconnect:
+                rejected = True
+            assert rejected, "WS without a token should be rejected"
+
+            # correct token in the query -> connection is accepted
+            with c.websocket_connect("/ws/events?token=ws-secret-token"):
+                pass
+    finally:
+        settings.api_token = ""
 
 
 def _rate_limit(body: dict) -> None:

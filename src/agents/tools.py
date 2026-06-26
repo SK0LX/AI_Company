@@ -194,17 +194,23 @@ def _self_edit_protected(rel_path: str) -> bool:
     norm = os.path.normpath(rel_path).replace(os.sep, "/").lower()
     if not norm or norm == ".":
         return False
-    top = norm.split("/", 1)[0]
-    if top in (".git", "data"):
+    parts = norm.split("/")
+    # The runtime DB dir is the repo-root `data/` only (a source folder named
+    # `data` deeper in the tree is legit, e.g. src/data/).
+    if parts[0] == "data":
         return True
-    base = norm.rsplit("/", 1)[-1]
-    # env files at ANY depth (config/.env, services/.env.prod, …), not just root.
-    if base == ".env" or base.startswith(".env."):
-        return True
-    # secret material by file name / extension, anywhere. Matched on the basename
-    # (not a broad substring) so legit sources like `password_hashing.py` pass.
-    if base.endswith((".key", ".pem", ".crt", ".p12", ".pfx")) or base in ("id_rsa", "credentials.json"):
-        return True
+    # Everything below is checked on EVERY path component — not just the leaf —
+    # so a protected name used as a *directory* (.env/x, .env/.git/hooks/x) can't
+    # smuggle a write past a basename-only check.
+    for part in parts:
+        if part == ".git":  # VCS internals at any depth
+            return True
+        if part == ".env" or part.startswith(".env."):  # env files/dirs at any depth
+            return True
+        # secret material by file name / extension (not a broad substring, so legit
+        # sources like password_hashing.py / token_service.py still pass).
+        if part.endswith((".key", ".pem", ".crt", ".p12", ".pfx")) or part in ("id_rsa", "credentials.json"):
+            return True
     if "secret" in norm:
         return True
     return False
@@ -681,29 +687,47 @@ def save_memory(path: str, content: str) -> str:
     return wiki_write_note(path, content)
 
 
-# Patterns that are never legitimate for a build/test/install step and are
-# catastrophic or exfiltrate secrets — refused outright (see run_shell). Kept
-# tight so ordinary tooling (npm/pytest/docker/git) is unaffected. (label, regex):
+# A best-effort denylist of obviously-catastrophic / secret-exfil command shapes.
+# IMPORTANT: this is a SPEED BUMP, not a security boundary — a determined shell can
+# always obfuscate (more encoders, interpreters, syntax). The real protections are:
+# shell execution is OFF by default, every command needs explicit human approval
+# showing the literal command, and in the Docker deploy the shell runs inside the
+# container. This list just blocks the easy/accidental footguns. (label, regex):
+_NET = r"curl|wget|fetch|nc|ncat|netcat|socat|telnet|ftp|tftp|scp|rsync|ssh|sftp|mail|sendmail|aws|gsutil|rclone|az"
 _SHELL_DENY: list[tuple[str, "re.Pattern[str]"]] = [
-    ("recursive delete of root/home", re.compile(r"\brm\s+-[a-z]*r[a-z]*f?\b[^|;&]*\s(/|/\*|~|\$HOME)(\s|/|$)", re.I)),
+    ("recursive delete of an absolute/home path", re.compile(r"\brm\s+-[a-z]*r[a-z]*f?\b[^|;&]*\s(/|~|\$HOME)", re.I)),
+    ("destructive rm via a variable or substitution", re.compile(r"\brm\s+-[a-z]*r[a-z]*f?\b[^|;&]*(\$\(|`|\$\{?[A-Za-z_])", re.I)),
+    ("find with -delete / -exec rm", re.compile(r"\bfind\b[^|;&]*-(delete|exec\s+rm)\b", re.I)),
     ("fork bomb", re.compile(r":\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:")),
-    ("filesystem format", re.compile(r"\bmkfs\b|\bmke2fs\b", re.I)),
+    ("filesystem format", re.compile(r"\bmkfs|\bmke2fs\b", re.I)),
     ("raw write to a disk device", re.compile(r"\bdd\b[^|;&]*\bof=/dev/|>\s*/dev/(sd|nvme|disk|vd)", re.I)),
-    ("overwrite of system files", re.compile(r">>?\s*/etc/(passwd|shadow|sudoers|hosts)\b", re.I)),
+    ("write to a system file", re.compile(r"(>>?\s*|\btee\b[^|;&]*\s)/etc/(passwd|shadow|sudoers|hosts)\b", re.I)),
+    ("reference to a sensitive system file", re.compile(r"/etc/(shadow|gshadow|sudoers)\b", re.I)),
     ("host shutdown/reboot", re.compile(r"\b(shutdown|reboot|halt|poweroff|init\s+0)\b", re.I)),
-    ("remote script piped to a shell", re.compile(r"\b(curl|wget|fetch)\b[^|]*\|\s*(sudo\s+)?(sh|bash|zsh|python\d?)\b", re.I)),
     ("world-writable chmod on root", re.compile(r"\bchmod\s+-[a-z]*\s*777\s+/(\s|$)", re.I)),
+    ("remote/encoded script piped to a shell",
+     re.compile(r"\b(curl|wget|fetch|base64|xxd|od|hexdump|openssl)\b[^|]*\|\s*(sudo\s+)?(sh|bash|zsh|dash|python\d?|perl|ruby|node|php)\b", re.I)),
+    ("a shell reading its script from a redirect", re.compile(r"\b(sh|bash|zsh|dash)\b\s*<\s*\S", re.I)),
+    ("interpreter one-liner running OS/shell commands",
+     re.compile(r"\b(python\d?|perl|ruby|node|php)\b[^|;&]*\s-(c|e|r)\b[^|;&]*(system|exec|popen|spawn|child_process|subprocess|os\.|rmtree|unlink|rm\s+-rf)", re.I)),
+    ("eval of dynamic content", re.compile(r"\beval\b", re.I)),
+    ("IFS field-separator tampering", re.compile(r"\bIFS=")),
     ("secret exfiltration over the network",
-     re.compile(r"\b(curl|wget|nc|ncat|scp|rsync|ssh)\b[^|;&]*(\.env\b|id_rsa\b|secret\.key\b|\.ssh/|credentials)", re.I)),
-    ("secret read piped to the network",
-     re.compile(r"(\.env\b|id_rsa\b|secret\.key\b|\.ssh/|credentials)[^|]*\|[^|]*\b(curl|wget|nc|ncat|scp|ssh|telnet)\b", re.I)),
+     re.compile(rf"\b({_NET})\b[^|;&]*(\.env\b|id_rsa\b|secret\.key\b|\.ssh\b|credentials)", re.I)),
+    ("secret read piped/redirected to the network",
+     re.compile(rf"(\.env\b|id_rsa\b|secret\.key\b|\.ssh\b|credentials).*[|<].*\b({_NET})\b", re.I)),
 ]
 
 
 def _shell_danger(command: str) -> str:
-    """Return a reason if ``command`` matches a hard-blocked pattern, else ""."""
+    """Return a reason if ``command`` matches a hard-blocked pattern, else "".
+
+    Matches the raw command AND a normalized copy (shell quotes + backslashes
+    stripped, whitespace collapsed) so `rm -rf '/'`, `rm -rf "/"` and `rm -rf \\/`
+    can't hide the path behind quoting/escaping."""
+    norm = re.sub(r"\s+", " ", command.replace("\\", "").replace("'", "").replace('"', ""))
     for label, pat in _SHELL_DENY:
-        if pat.search(command):
+        if pat.search(command) or pat.search(norm):
             return label
     return ""
 

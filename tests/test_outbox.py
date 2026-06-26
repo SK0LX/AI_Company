@@ -117,6 +117,19 @@ def _edge_cases() -> None:
     asyncio.run(svc._maybe_autoreply("developer", msg(settings.agent_chat_max_depth), 999002))
     assert fe_count() == n, "max should be the hard stop"
 
+    # a corrupt meta_json must NOT reset depth to 0 — it fails closed at the cap
+    dev_id = registry.get("developer").id
+    with get_session() as s:
+        bad = Message(from_agent_id=dev_id, chat_id=999002, kind="CHAT",
+                      text=f"@frontend {mk} broken", sent=True, meta_json="NOT-JSON")
+        s.add(bad)
+        s.commit()
+        s.refresh(bad)
+    assert outbox._depth_of(bad) >= settings.agent_chat_max_depth
+    n = fe_count()
+    asyncio.run(svc._maybe_autoreply("developer", bad, 999002))
+    assert fe_count() == n, "corrupt depth must not restart the chain"
+
 
 def main() -> None:
     registry.setup()

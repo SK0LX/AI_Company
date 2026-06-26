@@ -157,6 +157,12 @@ _rl_hits: dict[str, deque] = defaultdict(deque)
 
 def _rate_limited(client: str) -> bool:
     now = time.monotonic()
+    # Bound memory: a flood of one-shot clients (many source IPs) would otherwise
+    # leave a deque per client forever, since per-client pruning only runs when
+    # that same client returns. Sweep stale buckets once the map grows large.
+    if len(_rl_hits) > 4096:
+        for k in [k for k, d in _rl_hits.items() if not d or now - d[-1] > _RL_WINDOW]:
+            del _rl_hits[k]
     dq = _rl_hits[client]
     while dq and now - dq[0] > _RL_WINDOW:
         dq.popleft()
@@ -164,6 +170,26 @@ def _rate_limited(client: str) -> bool:
         return True
     dq.append(now)
     return False
+
+
+def _authorized_ws(ws: WebSocket) -> bool:
+    """Same policy as _authorized_mutation, but for the events WebSocket — browsers
+    can't set headers on a WS handshake, so the token/initData also come as query
+    params (?token=… / ?init_data=…)."""
+    from src.config import settings
+
+    qp = ws.query_params
+    init = qp.get("init_data") or ws.headers.get("x-telegram-init-data")
+    if init:
+        from src import tg_auth
+
+        if tg_auth.authenticate(init):
+            return True
+    if settings.api_token:
+        token = qp.get("token") or ws.headers.get("x-api-token") or ""
+        return bool(token) and hmac.compare_digest(token, settings.api_token)
+    host = ws.client.host if ws.client else ""
+    return host in _LOCAL_HOSTS
 
 
 @app.middleware("http")
@@ -554,9 +580,13 @@ def system_activity(limit: int = 80) -> list[dict]:
 
 @app.websocket("/ws/events")
 async def ws_events(ws: WebSocket) -> None:
-    """Stream task events to the admin board as they happen."""
+    """Stream task events to the admin board as they happen (auth required — the
+    live feed carries internal task/decision/approval activity)."""
     from src.events import hub
 
+    if not _authorized_ws(ws):
+        await ws.close(code=1008)  # policy violation
+        return
     await ws.accept()
     queue = hub.subscribe()
     try:

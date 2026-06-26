@@ -63,7 +63,9 @@ def _depth_of(m: Message) -> int:
     try:
         return int(json.loads(m.meta_json or "{}").get("depth", 0))
     except Exception:  # noqa: BLE001
-        return 0
+        # Fail CLOSED: a corrupt/missing depth must not reset the chain to 0 and
+        # let an auto-reply loop run forever — treat it as already at the cap.
+        return settings.agent_chat_max_depth
 
 
 async def _default_decider(slug: str, transcript: str) -> tuple[bool, str]:

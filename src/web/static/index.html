@@ -845,7 +845,14 @@ function scheduleRefresh() {
 }
 function connectWS() {
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-  ws = new WebSocket(`${proto}://${location.host}/ws/events`);
+  // The WS handshake can't carry headers, so pass auth as query params.
+  const q = new URLSearchParams();
+  const tok = (function () { try { return localStorage.getItem('apiToken'); } catch (e) { return null; } })();
+  if (tok) q.set('token', tok);
+  const initData = (window.Telegram && Telegram.WebApp && Telegram.WebApp.initData) || '';
+  if (initData) q.set('init_data', initData);
+  const qs = q.toString();
+  ws = new WebSocket(`${proto}://${location.host}/ws/events${qs ? '?' + qs : ''}`);
   ws.onopen = () => setLive(true);
   ws.onclose = () => { setLive(false); setTimeout(connectWS, 2000); };
   ws.onerror = () => ws.close();

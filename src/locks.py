@@ -36,16 +36,25 @@ def claim_task(task_id: int, agent: str) -> Optional[str]:
     """Atomically check out a task. Returns a lock token on success, or None if
     another agent already holds it (or it's done/cancelled). Re-claiming a task
     you already hold is idempotent."""
-    token = secrets.token_hex(8)
     now = datetime.utcnow()
     with engine.begin() as conn:
+        # Idempotent re-claim: if I already hold it, return my EXISTING token
+        # unchanged — generating a fresh one would orphan the handle the caller is
+        # already holding (it could then never release the task).
+        held = conn.execute(
+            text(f"SELECT lock_token FROM {_TASK} WHERE id=:tid AND claimed_by=:agent"),
+            {"tid": task_id, "agent": agent},
+        ).fetchone()
+        if held and held[0]:
+            return held[0]
+        token = secrets.token_hex(8)
         res = conn.execute(
             text(f"""
                 UPDATE {_TASK}
                    SET claimed_by=:agent, claimed_at=:now, lock_token=:tok,
                        status='in_progress', updated_at=:now
                  WHERE id=:tid
-                   AND (claimed_by='' OR claimed_by IS NULL OR claimed_by=:agent)
+                   AND (claimed_by='' OR claimed_by IS NULL)
                    AND status IN ('new','in_progress','review')
             """),
             {"agent": agent, "now": now, "tok": token, "tid": task_id},
