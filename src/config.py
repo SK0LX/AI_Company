@@ -157,6 +157,10 @@ class Settings(BaseSettings):
     # which is hard-capped). Tune to taste; set enable_group_chat=false to mute.
     enable_group_chat: bool = True
     group_max_agent_turns: int = 2  # agent contributions per human message (cap)
+    # Tool steps a single agent may take when it actually DOES a work request in
+    # the group chat. 10 was too low for real tasks (the agent dead-ends with
+    # "needs more steps"); 40 lets it finish while still bounding a runaway.
+    group_work_max_steps: int = 40
     group_cooldown: int = 6  # min seconds between two agent posts in a chat
     group_ambient_prob: float = 0.15  # chance to consider chiming into idle chatter
     group_history_turns: int = 16  # recent group messages kept as context

@@ -1392,7 +1392,10 @@ async def arun_team(
         "task_id": None,  # collab task created on the first delegation (stage 4)
         "steps": 0,
     }
-    config = {"configurable": {"thread_id": thread_id}}
+    # Each internal step is two graph super-steps (ceo -> specialist), so the
+    # LangGraph cap must sit above 2*MAX_STEPS or the run trips GraphRecursionError
+    # ("needs more steps") before our own _finalize at MAX_STEPS can answer.
+    config = {"configurable": {"thread_id": thread_id}, "recursion_limit": MAX_STEPS * 2 + 6}
 
     # Register the run so the user can chat with the CEO / add to the task while
     # it's in progress (see aquick_reply). Always cleared when the run ends.
@@ -1681,10 +1684,11 @@ async def agroup_reply(
             "colleague. Do not paste large code into the chat."
         )
         try:
-            # Cap tool steps tightly in group chat — a casual request must not turn
-            # into a 20-call paid fan-out (it's not a full build, just a quick hand).
+            # Enough tool steps to actually finish a real work request (configurable),
+            # while still bounding a runaway fan-out.
             result = await _tool_agent(slug).ainvoke(
-                {"messages": [HumanMessage(content=task)]}, config={"recursion_limit": 10}
+                {"messages": [HumanMessage(content=task)]},
+                config={"recursion_limit": settings.group_work_max_steps},
             )
             reply = _content_to_text(result["messages"][-1].content) or "Готово."
         except Exception:  # noqa: BLE001
