@@ -373,10 +373,17 @@ def home_summary() -> dict:
                 owner = by_slug.get(t.owner_agent_id)
                 if owner:
                     busy[owner] = busy.get(owner, 0) + 1
+    try:
+        from src import workers
+
+        alive = workers.alive_agents()
+    except Exception:  # noqa: BLE001
+        alive = set()
     team = [
         {"slug": a.slug, "name": a.name, "role": a.role,
          "status": "working" if busy.get(a.slug) else "idle",
-         "active_tasks": busy.get(a.slug, 0), "is_lead": a.slug == "ceo"}
+         "active_tasks": busy.get(a.slug, 0), "is_lead": a.slug == "ceo",
+         "worker": a.slug in alive}
         for a in registry.list_agents(enabled_only=True)
     ]
     total_active = sum(busy.values())
@@ -408,13 +415,18 @@ def board_overview() -> dict:
 
 
 def delete_task(task_id: int) -> bool:
-    """Permanently remove ONE task and its timeline events. Returns False if missing."""
+    """Permanently remove ONE task and everything tied to it (events, help requests,
+    delegations) so no orphan rows survive a rowid reuse. False if missing."""
     with get_session() as session:
         task = session.get(Task, task_id)
         if not task:
             return False
         for ev in session.exec(select(TaskEvent).where(TaskEvent.task_id == task_id)).all():
             session.delete(ev)
+        for hr in session.exec(select(HelpRequest).where(HelpRequest.task_id == task_id)).all():
+            session.delete(hr)
+        for d in session.exec(select(Delegation).where(Delegation.task_id == task_id)).all():
+            session.delete(d)
         session.delete(task)
         session.commit()
     return True

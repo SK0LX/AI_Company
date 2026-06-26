@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 import os
 
+from sqlalchemy import event as _sa_event
 from sqlmodel import Session, SQLModel, create_engine
 
 from src.config import settings
@@ -20,7 +21,23 @@ _DB_DIR = os.path.dirname(settings.db_path) or "data"
 DB_PATH = os.path.join(_DB_DIR, "app.sqlite")
 os.makedirs(_DB_DIR, exist_ok=True)
 
-engine = create_engine(f"sqlite:///{DB_PATH}", echo=False)
+engine = create_engine(
+    f"sqlite:///{DB_PATH}", echo=False,
+    # Multiple worker processes/containers share this DB (v3 Ф3): allow cross-thread
+    # use and wait (don't error) when another writer holds the lock.
+    connect_args={"check_same_thread": False, "timeout": 10},
+)
+
+
+@_sa_event.listens_for(engine, "connect")
+def _sqlite_pragmas(dbapi_conn, _record) -> None:  # noqa: ANN001
+    """WAL + busy_timeout so concurrent writers (workers + gateway) coordinate
+    safely instead of throwing 'database is locked'."""
+    cur = dbapi_conn.cursor()
+    cur.execute("PRAGMA journal_mode=WAL")
+    cur.execute("PRAGMA busy_timeout=10000")
+    cur.execute("PRAGMA synchronous=NORMAL")
+    cur.close()
 
 
 def init_db() -> None:

@@ -276,3 +276,15 @@ class ResourceLock(SQLModel, table=True):
     token: str = ""  # opaque token of this acquisition
     acquired_at: datetime = Field(default_factory=datetime.utcnow)
     expires_at: Optional[datetime] = Field(default=None, index=True)
+
+
+class WorkerHeartbeat(SQLModel, table=True):
+    """Liveness beat from a per-agent worker process/container (v3 Ф3). The gateway
+    and dashboard read this to show which agents have a live worker. One row per
+    agent slug (upserted)."""
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    agent: str = Field(index=True, unique=True)
+    host: str = ""  # container/host name
+    pid: int = 0
+    last_seen: datetime = Field(default_factory=datetime.utcnow)

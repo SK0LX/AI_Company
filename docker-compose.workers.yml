@@ -1,0 +1,40 @@
+# Per-agent workers (v3 Ф3-full): the gateway (Telegram + dashboard) plus ONE
+# worker container per agent. They coordinate purely through the shared DB volume
+# + the atomic claim (src/locks.py) — no central pusher, no double-work.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.workers.yml up -d --build
+#
+# Smoke without spending budget: set WORKER_DRYRUN=1 (workers claim+complete tasks
+# without calling the LLM).
+x-worker: &worker
+  image: aiagents:latest
+  restart: unless-stopped
+  env_file: [.env]
+  environment:
+    DB_PATH: /app/data/memory.sqlite
+    WORKSPACE_DIR: /app/workspace
+    # WORKER_DRYRUN: "1"
+  volumes:
+    - aiagents_data:/app/data
+    - aiagents_workspace:/app/workspace
+  depends_on: [aiagents]
+
+services:
+  # The gateway: chats + serves the dashboard; the workers do the pulling, so the
+  # in-process autowork loop is turned off here.
+  aiagents:
+    environment:
+      ENABLE_AUTOWORK: "false"
+
+  worker-developer:
+    <<: *worker
+    command: ["python", "-m", "src.worker", "developer"]
+  worker-frontend:
+    <<: *worker
+    command: ["python", "-m", "src.worker", "frontend"]
+  worker-tester:
+    <<: *worker
+    command: ["python", "-m", "src.worker", "tester"]
+  worker-reviewer:
+    <<: *worker
+    command: ["python", "-m", "src.worker", "reviewer"]

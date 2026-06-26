@@ -82,7 +82,8 @@ async def test_help_flow() -> None:
     assert helper == "developer"
     from sqlmodel import select
     with get_session() as s:
-        hr = s.exec(select(HelpRequest).where(HelpRequest.task_id == tid)).first()
+        hr = s.exec(select(HelpRequest).where(HelpRequest.task_id == tid)
+                    .order_by(HelpRequest.id.desc())).first()
         assert hr.status == "assigned" and hr.helper_id == registry.get("developer").id
         hr_id = hr.id
     assert _types(tid)[:3] == ["created", "help_requested", "help_assigned"]

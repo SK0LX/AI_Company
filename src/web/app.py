@@ -321,6 +321,14 @@ def system_stats() -> dict:
     return system.snapshot()
 
 
+@app.get("/api/workers")
+def workers_status() -> list[dict]:
+    """Per-agent worker liveness (v3 Ф3): which agents have a live worker process."""
+    from src import workers
+
+    return workers.all_workers()
+
+
 @app.get("/api/webapp")
 def webapp_config() -> dict:
     """Tells the page whether the Mini App is configured (URL set)."""
