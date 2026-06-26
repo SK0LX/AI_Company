@@ -681,6 +681,33 @@ def save_memory(path: str, content: str) -> str:
     return wiki_write_note(path, content)
 
 
+# Patterns that are never legitimate for a build/test/install step and are
+# catastrophic or exfiltrate secrets — refused outright (see run_shell). Kept
+# tight so ordinary tooling (npm/pytest/docker/git) is unaffected. (label, regex):
+_SHELL_DENY: list[tuple[str, "re.Pattern[str]"]] = [
+    ("recursive delete of root/home", re.compile(r"\brm\s+-[a-z]*r[a-z]*f?\b[^|;&]*\s(/|/\*|~|\$HOME)(\s|/|$)", re.I)),
+    ("fork bomb", re.compile(r":\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:")),
+    ("filesystem format", re.compile(r"\bmkfs\b|\bmke2fs\b", re.I)),
+    ("raw write to a disk device", re.compile(r"\bdd\b[^|;&]*\bof=/dev/|>\s*/dev/(sd|nvme|disk|vd)", re.I)),
+    ("overwrite of system files", re.compile(r">>?\s*/etc/(passwd|shadow|sudoers|hosts)\b", re.I)),
+    ("host shutdown/reboot", re.compile(r"\b(shutdown|reboot|halt|poweroff|init\s+0)\b", re.I)),
+    ("remote script piped to a shell", re.compile(r"\b(curl|wget|fetch)\b[^|]*\|\s*(sudo\s+)?(sh|bash|zsh|python\d?)\b", re.I)),
+    ("world-writable chmod on root", re.compile(r"\bchmod\s+-[a-z]*\s*777\s+/(\s|$)", re.I)),
+    ("secret exfiltration over the network",
+     re.compile(r"\b(curl|wget|nc|ncat|scp|rsync|ssh)\b[^|;&]*(\.env\b|id_rsa\b|secret\.key\b|\.ssh/|credentials)", re.I)),
+    ("secret read piped to the network",
+     re.compile(r"(\.env\b|id_rsa\b|secret\.key\b|\.ssh/|credentials)[^|]*\|[^|]*\b(curl|wget|nc|ncat|scp|ssh|telnet)\b", re.I)),
+]
+
+
+def _shell_danger(command: str) -> str:
+    """Return a reason if ``command`` matches a hard-blocked pattern, else ""."""
+    for label, pat in _SHELL_DENY:
+        if pat.search(command):
+            return label
+    return ""
+
+
 @tool
 @requires("can_run_shell")
 async def run_shell(command: str) -> str:
@@ -698,6 +725,13 @@ async def run_shell(command: str) -> str:
     command = (command or "").strip()
     if not command:
         return "[empty command]"
+
+    # Defense-in-depth: refuse catastrophic / secret-exfil commands OUTRIGHT, before
+    # they can even be approved (a mis-tap must not be able to wipe the host or pipe
+    # tokens out). The approval step below is the second gate, not the only one.
+    danger = _shell_danger(command)
+    if danger:
+        return f"[blocked by safety policy: {danger}]"
 
     # Human-in-the-loop: block until the user approves via Telegram.
     from src.approvals import request_command_approval

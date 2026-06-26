@@ -15,6 +15,8 @@ from contextlib import asynccontextmanager
 from typing import Optional
 
 import hmac
+import time
+from collections import defaultdict, deque
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse
@@ -146,19 +148,40 @@ def _authorized_mutation(request: Request) -> bool:
     return host in _LOCAL_HOSTS
 
 
+# Coarse in-memory rate limit for mutating calls, per client host — throttles a
+# token brute-force and a runaway client. Module-level so tests can tighten it.
+_RL_MAX = 60
+_RL_WINDOW = 60.0
+_rl_hits: dict[str, deque] = defaultdict(deque)
+
+
+def _rate_limited(client: str) -> bool:
+    now = time.monotonic()
+    dq = _rl_hits[client]
+    while dq and now - dq[0] > _RL_WINDOW:
+        dq.popleft()
+    if len(dq) >= _RL_MAX:
+        return True
+    dq.append(now)
+    return False
+
+
 @app.middleware("http")
 async def _require_auth(request: Request, call_next):
-    """Gate every mutating /api/ call. Reads stay open; /api/tg/auth is the login
-    itself so it's exempt."""
+    """Gate every mutating /api/ call: rate-limit, then authenticate. Reads stay
+    open; /api/tg/auth is the login itself so it's exempt."""
     path = request.url.path
     if (request.method in ("POST", "PUT", "PATCH", "DELETE")
-            and path.startswith("/api/") and path != "/api/tg/auth"
-            and not _authorized_mutation(request)):
-        return JSONResponse(
-            {"detail": "authentication required: set API_TOKEN and send X-Api-Token, "
-                       "or open via the Telegram Mini App"},
-            status_code=401,
-        )
+            and path.startswith("/api/") and path != "/api/tg/auth"):
+        client = request.client.host if request.client else "?"
+        if _rate_limited(client):
+            return JSONResponse({"detail": "rate limit exceeded — slow down"}, status_code=429)
+        if not _authorized_mutation(request):
+            return JSONResponse(
+                {"detail": "authentication required: set API_TOKEN and send X-Api-Token, "
+                           "or open via the Telegram Mini App"},
+                status_code=401,
+            )
     return await call_next(request)
 
 

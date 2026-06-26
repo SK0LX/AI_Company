@@ -56,6 +56,12 @@ class Settings(BaseSettings):
     # Where the SQLite conversation memory lives (persists across restarts).
     db_path: str = "data/memory.sqlite"
 
+    # SQLite durability (PRAGMA synchronous). "NORMAL" (default) is fast and safe
+    # against app crashes under WAL, but a hard OS/host crash can lose the last
+    # transactions. For a 24/7 deploy where the board/outbox/approval ledger must
+    # survive a power loss, set "FULL" (each commit fsync'd; ~2-5% slower).
+    db_synchronous: str = "NORMAL"
+
     # Shared workspace where the team writes real project files. Each project
     # gets its own subfolder. The developer/frontend file tools are sandboxed to
     # this directory — they cannot read or write outside it.

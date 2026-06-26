@@ -33,10 +33,16 @@ engine = create_engine(
 def _sqlite_pragmas(dbapi_conn, _record) -> None:  # noqa: ANN001
     """WAL + busy_timeout so concurrent writers (workers + gateway) coordinate
     safely instead of throwing 'database is locked'."""
+    # Durability is operator-selectable: NORMAL (fast, crash-safe under WAL) or
+    # FULL (fsync every commit — survives a host/power crash). Reject anything else
+    # so a typo can't silently turn syncing OFF.
+    sync = (settings.db_synchronous or "NORMAL").strip().upper()
+    if sync not in ("NORMAL", "FULL"):
+        sync = "NORMAL"
     cur = dbapi_conn.cursor()
     cur.execute("PRAGMA journal_mode=WAL")
     cur.execute("PRAGMA busy_timeout=10000")
-    cur.execute("PRAGMA synchronous=NORMAL")
+    cur.execute(f"PRAGMA synchronous={sync}")
     cur.close()
 
 

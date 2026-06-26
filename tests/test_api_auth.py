@@ -41,9 +41,29 @@ def main() -> None:
         settings.api_token = ""
         with app_client() as c:
             assert c.post("/api/budgets", json=body).status_code != 401
+
+        _rate_limit(body)
     finally:
         settings.api_token = prev
     print("api auth tests: OK")
+
+
+def _rate_limit(body: dict) -> None:
+    """Mutating calls are throttled; reads are never rate-limited."""
+    from src.web import app as webapp
+
+    orig_max = webapp._RL_MAX
+    settings.api_token = ""  # so calls pass auth and actually exercise the limiter
+    webapp._RL_MAX = 3
+    webapp._rl_hits.clear()
+    try:
+        with app_client() as c:
+            codes = [c.post("/api/budgets", json=body).status_code for _ in range(6)]
+            assert codes.count(429) >= 1, f"expected throttling, got {codes}"
+            assert c.get("/api/budgets").status_code == 200  # reads exempt
+    finally:
+        webapp._RL_MAX = orig_max
+        webapp._rl_hits.clear()
 
 
 if __name__ == "__main__":

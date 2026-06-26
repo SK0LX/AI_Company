@@ -89,10 +89,32 @@ async def _web_decision() -> None:
     approvals.clear_asker()
 
 
+async def _telegram_wins() -> None:
+    """When the Telegram asker answers first, it wins the race and the decision is
+    recorded as coming from telegram (the dashboard never had to act)."""
+    from src.registry import registry
+
+    registry.setup()
+
+    async def quick_yes(prompt: str) -> bool:
+        return True  # answers immediately
+
+    approvals.set_asker(quick_yes)
+    try:
+        ok = await approvals.request_approval("shell", "ls -la /tmp", agent="developer")
+        assert ok is True
+        rec = [r for r in approvals.recent(20) if r["summary"] == "ls -la /tmp"]
+        assert rec and rec[0]["status"] == "approved" and rec[0]["reason"] == "telegram"
+        assert all(p["summary"] != "ls -la /tmp" for p in approvals.pending())
+    finally:
+        approvals.clear_asker()
+
+
 def main() -> None:
     asyncio.run(_run())
     asyncio.run(_typed())
     asyncio.run(_web_decision())
+    asyncio.run(_telegram_wins())
     print("approvals tests: OK")
 
 

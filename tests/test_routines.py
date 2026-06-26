@@ -89,6 +89,33 @@ def _scheduler_tick() -> None:
         routines.delete_routine(rid)
 
 
+def _downtime_coalescing() -> None:
+    """After hours of downtime a routine fires ONCE and reschedules from now —
+    no backlog of one run per missed slot."""
+    from src.db.engine import get_session
+    from src.db.models import Routine
+
+    r = routines.create_routine({
+        "name": "_ut_coalesce", "schedule_kind": "interval", "schedule_value": "5",
+        "prompt": "ping", "target": "team",
+    })
+    rid = r["id"]
+    try:
+        now = datetime.utcnow()
+        with get_session() as s:  # simulate 2h overdue
+            row = s.get(Routine, rid)
+            row.next_run_at = now - timedelta(hours=2)
+            s.add(row)
+            s.commit()
+        due = [d for d in routines.due_routines(now) if d["id"] == rid]
+        assert len(due) == 1, "overdue routine must be due exactly once, not per slot"
+        nxt = routines.mark_ran(rid, now)
+        assert now < nxt <= now + timedelta(seconds=10), "next slot is from now, not backfilled"
+        assert all(d["id"] != rid for d in routines.due_routines(now)), "not due again after run"
+    finally:
+        routines.delete_routine(rid)
+
+
 def main() -> None:
     registry.setup()
     enable0 = settings.enable_routines
@@ -96,6 +123,7 @@ def main() -> None:
         _schedule_math()
         _crud_due_advance()
         _scheduler_tick()
+        _downtime_coalescing()
     finally:
         settings.enable_routines = enable0
     print("routines tests: OK")

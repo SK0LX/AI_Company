@@ -16,8 +16,38 @@ from src.config import settings
 from src.registry import registry
 
 
+def _concurrency_cap() -> None:
+    """tick() never starts more jobs than autowork_max_concurrent, even when more
+    agents have claimable work."""
+    aw0, cap0, b0 = (settings.enable_autowork, settings.autowork_max_concurrent,
+                     settings.enable_budget)
+    settings.enable_autowork = True
+    settings.enable_budget = False
+    settings.autowork_max_concurrent = 1  # only one job may start per tick
+    collab.clear_board(mode="delete")
+    t_dev = collab.create_task("Починить api эндпоинт на бэкенде", created_by="ceo")
+    t_fe = collab.create_task("Сверстать css вёрстку экрана интерфейса", created_by="ceo")
+    try:
+        # two different agents each have work, so without a cap >1 would fire
+        assert t_dev in autowork.candidates_for("developer", "developer")
+        assert t_fe in autowork.candidates_for("frontend", "frontend")
+
+        async def runner(slug: str, task_id: int, text: str) -> str:
+            return "ok"
+
+        fired = asyncio.run(autowork.AutoWorkService(runner).tick())
+        assert fired == 1, f"cap=1 must start exactly one job, got {fired}"
+        statuses = sorted([collab.get_task(t_dev)["status"], collab.get_task(t_fe)["status"]])
+        assert statuses == ["done", "new"], statuses  # exactly one done, one left
+    finally:
+        settings.enable_autowork, settings.autowork_max_concurrent, settings.enable_budget = aw0, cap0, b0
+        collab.delete_task(t_dev)
+        collab.delete_task(t_fe)
+
+
 def main() -> None:
     registry.setup()
+    _concurrency_cap()
     aw0, b0, cap0 = settings.enable_autowork, settings.enable_budget, settings.autowork_max_concurrent
     settings.enable_autowork = False
     settings.enable_budget = False
