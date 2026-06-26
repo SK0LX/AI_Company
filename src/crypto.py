@@ -35,8 +35,13 @@ def _load_key() -> bytes:
         with open(_KEY_FILE, "rb") as fh:
             return fh.read().strip()
     key = Fernet.generate_key()
-    with open(_KEY_FILE, "wb") as fh:
-        fh.write(key)
+    # The root secret for all per-agent tokens — never world-readable. Create with
+    # 0600 exclusively (O_EXCL avoids a TOCTOU race on the just-checked path).
+    fd = os.open(_KEY_FILE, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        os.write(fd, key)
+    finally:
+        os.close(fd)
     return key
 
 

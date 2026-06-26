@@ -445,8 +445,14 @@ def clear_board(*, status: Optional[str] = None, mode: str = "cancel") -> int:
         n = len(tasks)
         if mode == "delete":
             for t in tasks:
+                # Mirror delete_task: drop every dependent row so no orphan
+                # HelpRequest/Delegation survives a later rowid reuse.
                 for ev in session.exec(select(TaskEvent).where(TaskEvent.task_id == t.id)).all():
                     session.delete(ev)
+                for hr in session.exec(select(HelpRequest).where(HelpRequest.task_id == t.id)).all():
+                    session.delete(hr)
+                for d in session.exec(select(Delegation).where(Delegation.task_id == t.id)).all():
+                    session.delete(d)
                 session.delete(t)
         else:  # cancel
             now = datetime.utcnow()

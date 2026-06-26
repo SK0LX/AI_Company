@@ -70,7 +70,7 @@ class AutoWorkService:
         except Exception:  # noqa: BLE001
             pass
         cap = max(1, settings.autowork_max_concurrent)
-        claims: list[tuple[str, int]] = []
+        claims: list[tuple[str, int, str]] = []
         for a in registry.list_agents(enabled_only=True):
             if a.slug == "ceo":  # CEO coordinates, doesn't pull worker tasks
                 continue
@@ -79,14 +79,16 @@ class AutoWorkService:
             if budget.blocked(a.slug):
                 continue
             for tid in candidates_for(a.slug, a.role):
-                if locks.claim_task(tid, a.slug):  # atomic — anti double-work
-                    claims.append((a.slug, tid))
+                token = locks.claim_task(tid, a.slug)  # atomic — anti double-work
+                if token:
+                    claims.append((a.slug, tid, token))
                     break
         if claims:
-            await asyncio.gather(*[self._work(s, t) for s, t in claims], return_exceptions=True)
+            await asyncio.gather(*[self._work(s, t, tok) for s, t, tok in claims],
+                                 return_exceptions=True)
         return len(claims)
 
-    async def _work(self, slug: str, task_id: int) -> None:
+    async def _work(self, slug: str, task_id: int, token: str = "") -> None:
         from src import collab
 
         task = collab.get_task(task_id) or {}
@@ -96,10 +98,10 @@ class AutoWorkService:
         except Exception:  # noqa: BLE001 - a failed job must not kill the loop
             logger.exception("autowork job failed: %s #%s", slug, task_id)
             collab.set_task_status(task_id, "new", actor=slug)  # back to the queue
-            locks.release_task(task_id, slug)
+            locks.release_task(task_id, slug, token=token)
             return
         collab.set_task_status(task_id, "done", actor=slug)  # fires the Задачник event
-        locks.release_task(task_id, slug)
+        locks.release_task(task_id, slug, token=token)
         if self._sender and result:
             try:
                 await self._sender(f"🤖 {registry.label(slug)} закрыл #{task_id}: {result[:200]}")

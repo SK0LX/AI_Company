@@ -61,12 +61,18 @@ def create_worktree(role: str) -> dict | None:
     if not is_git_repo(repo):
         logger.info("self-modify: %s is not a git repo; using in-place editing", repo)
         return None
-    branch = f"self-edit/{role}-{secrets.token_hex(3)}"
+    # 16 bytes of entropy so the worktree path isn't guessable (it briefly holds a
+    # checkout of the repo, incl. tracked config) by another local user.
+    branch = f"self-edit/{role}-{secrets.token_hex(16)}"
     path = os.path.join(_worktree_base(), branch.replace("/", "-"))
     rc, out = _git(repo, ["worktree", "add", path, "-b", branch])
     if rc != 0:
         logger.warning("self-modify: worktree add failed: %s", out)
         return None
+    try:
+        os.chmod(path, 0o700)  # owner-only — keep the checkout off other users
+    except OSError:
+        pass
     logger.info("self-modify: created worktree %s on branch %s", path, branch)
     return {"path": path, "branch": branch, "repo": repo}
 

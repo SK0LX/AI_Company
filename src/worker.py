@@ -39,7 +39,7 @@ async def _dry_runner(slug: str, task_id: int, text: str) -> str:
     return f"[dry-run] {slug} обработал #{task_id}"
 
 
-async def _work_one(slug: str, task_id: int, runner: Runner) -> bool:
+async def _work_one(slug: str, task_id: int, runner: Runner, *, token: str = "") -> bool:
     from src import collab
 
     task = collab.get_task(task_id) or {}
@@ -49,10 +49,10 @@ async def _work_one(slug: str, task_id: int, runner: Runner) -> bool:
     except Exception:  # noqa: BLE001 - a failed job returns the task to the queue
         logger.exception("worker job failed: %s #%s", slug, task_id)
         collab.set_task_status(task_id, "new", actor=slug)
-        locks.release_task(task_id, slug)
+        locks.release_task(task_id, slug, token=token)
         return False
     collab.set_task_status(task_id, "done", actor=slug)  # fires the Задачник event
-    locks.release_task(task_id, slug)
+    locks.release_task(task_id, slug, token=token)
     logger.info("worker %s closed task #%s", slug, task_id)
     return True
 
@@ -71,8 +71,9 @@ async def tick_once(slug: str, role: str, runner: Runner) -> Optional[int]:
     except Exception:  # noqa: BLE001
         pass
     for tid in candidates_for(slug, role):
-        if locks.claim_task(tid, slug):  # atomic — no other worker can take it
-            await _work_one(slug, tid, runner)
+        token = locks.claim_task(tid, slug)  # atomic — no other worker can take it
+        if token:
+            await _work_one(slug, tid, runner, token=token)
             return tid
     return None
 

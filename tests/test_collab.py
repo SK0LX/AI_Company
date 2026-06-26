@@ -92,11 +92,31 @@ async def test_help_flow() -> None:
     assert _types(tid)[-1] == "help_resolved"
 
 
+def test_clear_board_orphans() -> None:
+    """clear_board(mode='delete') must drop dependent rows too — no orphan
+    HelpRequest survives to be inherited via rowid reuse. Scoped to 'cancelled'
+    (which clear is meant to purge) so it can't touch live work."""
+    from sqlmodel import select
+
+    tid = collab.create_task("ut-clear-orphan", created_by="ceo")
+    collab.open_help(tid, "developer", "нужна помощь")
+    collab.set_task_status(tid, "cancelled")
+    with get_session() as s:
+        assert s.exec(select(HelpRequest).where(HelpRequest.task_id == tid)).first() is not None
+
+    collab.clear_board(status="cancelled", mode="delete")
+
+    with get_session() as s:
+        assert s.exec(select(HelpRequest).where(HelpRequest.task_id == tid)).first() is None
+        assert s.get(Task, tid) is None
+
+
 async def main() -> None:
     registry.setup()
     await test_delegation_accepted()
     await test_delegation_declined()
     await test_help_flow()
+    test_clear_board_orphans()
     print("collab tests: OK")
 
 

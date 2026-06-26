@@ -173,15 +173,25 @@ class Settings(BaseSettings):
     # OFF by default — it spends budget on its own. Loops are bounded by a strict
     # chain-depth cap: each auto-reply increments depth and stops at the cap.
     enable_agent_chat: bool = False
-    agent_chat_max_depth: int = 3
+    agent_chat_max_depth: int = 21
     proactive_min_interval: int = 30
     proactive_max_per_window: int = 5  # per agent
     proactive_window: int = 300  # seconds for the per-agent rate window
 
-    # Admin panel + bot host (single process). Bind to localhost by default —
-    # the panel has no auth yet, so do not expose it on a public interface.
+    # Admin panel + bot host (single process). Bind to localhost by default; when
+    # you expose it (Docker/Caddy), set api_token below so the mutating API isn't
+    # open to whoever reaches the port.
     admin_host: str = "127.0.0.1"
     admin_port: int = 8100
+
+    # Auth for the dashboard's state-changing API (create/delete agents, budgets,
+    # routines, approve shell/self-modify, …). When set, every POST/PATCH/DELETE
+    # /api/ request must carry this token (header `X-Api-Token` or `Authorization:
+    # Bearer …`) OR a valid Telegram Mini App initData. When empty, those requests
+    # are allowed only from the local host (in-process / 127.0.0.1) and are
+    # rejected for anyone coming in over the network — so a public deployment
+    # without a token can't be tampered with, it just can't mutate remotely.
+    api_token: str = ""
 
     # Telegram Mini App: public HTTPS URL where the dashboard is reachable (e.g.
     # an ngrok/cloudflared tunnel to this server, or a deploy). When set, the bots

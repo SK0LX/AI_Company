@@ -55,15 +55,25 @@ def claim_task(task_id: int, agent: str) -> Optional[str]:
     return None
 
 
-def release_task(task_id: int, agent: str) -> bool:
-    """Release a task you hold (no-op if you don't hold it)."""
+def release_task(task_id: int, agent: str, *, token: str = "") -> bool:
+    """Release a task you hold (no-op if you don't hold it).
+
+    Pass the ``token`` returned by :func:`claim_task` to make the release
+    compare-and-set: it then succeeds only if the row still carries *that* token,
+    so a stale release after the task was reclaimed/reassigned can't fire. With no
+    token it matches by holder only (the agent-tool path, which has no token)."""
+    params = {"tid": task_id, "agent": agent, "now": datetime.utcnow()}
+    cond = "claimed_by=:agent"
+    if token:
+        cond += " AND lock_token=:tok"
+        params["tok"] = token
     with engine.begin() as conn:
         res = conn.execute(
             text(f"""
                 UPDATE {_TASK} SET claimed_by='', lock_token='', claimed_at=NULL, updated_at=:now
-                 WHERE id=:tid AND claimed_by=:agent
+                 WHERE id=:tid AND {cond}
             """),
-            {"tid": task_id, "agent": agent, "now": datetime.utcnow()},
+            params,
         )
         return res.rowcount == 1
 

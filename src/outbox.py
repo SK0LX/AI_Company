@@ -40,8 +40,13 @@ def enqueue_say(agent: str, text: str, *, chat_id: Optional[int] = None,
         return None
     target = chat_id if chat_id is not None else settings.team_chat_id
     a = registry.get(agent)
+    if not a:
+        # Fail closed: never create an unattributed CHAT row — it would surface as
+        # "system" in drain and let an auto-reply chain start from a non-agent.
+        logger.warning("enqueue_say: unknown agent %r — dropped", agent)
+        return None
     with get_session() as session:
-        row = Message(from_agent_id=a.id if a else None, chat_id=target or None,
+        row = Message(from_agent_id=a.id, chat_id=target or None,
                       kind="CHAT", text=text[:4000], sent=False,
                       meta_json=json.dumps({"depth": int(depth)}))
         session.add(row)
@@ -123,6 +128,12 @@ class OutboxService:
                   for a in registry.list_agents(enabled_only=True)]
         target = gc.detect_addressed(m.text, roster)
         if not target or target == sender:
+            return
+        # Don't let a long auto-reply chain (up to agent_chat_max_depth hops, each
+        # an LLM call) run an agent that's already over budget.
+        from src import budget
+
+        if budget.blocked(target):
             return
         try:
             respond, reply = await self._decider(target, f"{registry.label(sender)}: {m.text}")

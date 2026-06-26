@@ -70,6 +70,54 @@ def _autoreply() -> None:
     assert len(fe_replies(mk)) == n2, "auto-reply fired while disabled"
 
 
+def _edge_cases() -> None:
+    """Invalid sender is dropped; a broken decider can't crash drain; the depth
+    boundary fires at max-1 and stops at max."""
+    from src.db.engine import get_session
+    from src.db.models import Message
+
+    # unknown agent -> no row created (no "system"-attributed chatter)
+    assert outbox.enqueue_say("does-not-exist-slug", "привет") is None
+
+    settings.enable_agent_chat = True
+    settings.agent_chat_max_depth = 5
+    settings.team_chat_id = 999002
+    mk = "ut-edge-" + secrets.token_hex(3)
+    fe_id = registry.get("frontend").id
+
+    def fe_count() -> int:
+        from sqlmodel import select
+        with get_session() as s:
+            return len([r for r in s.exec(select(Message).where(Message.kind == "CHAT")).all()
+                        if mk in (r.text or "") and r.from_agent_id == fe_id])
+
+    async def boom(slug: str, transcript: str) -> tuple:
+        raise RuntimeError("decider exploded")
+
+    async def yes(slug: str, transcript: str) -> tuple:
+        return (True, f"{mk} ok")
+
+    def msg(depth: int) -> Message:
+        mid = outbox.enqueue_say("developer", f"@frontend {mk} X", depth=depth)
+        with get_session() as s:
+            return s.get(Message, mid)
+
+    # a decider that raises must be swallowed (no auto-reply, no crash)
+    svc_boom = outbox.OutboxService(lambda *_: None, decider=boom)
+    n = fe_count()
+    asyncio.run(svc_boom._maybe_autoreply("developer", msg(0), 999002))
+    assert fe_count() == n, "broken decider should not produce a reply"
+
+    # depth == max-1 fires; depth == max does not (fence-post on the cap)
+    svc = outbox.OutboxService(lambda *_: None, decider=yes)
+    n = fe_count()
+    asyncio.run(svc._maybe_autoreply("developer", msg(settings.agent_chat_max_depth - 1), 999002))
+    assert fe_count() == n + 1, "max-1 should still auto-reply"
+    n = fe_count()
+    asyncio.run(svc._maybe_autoreply("developer", msg(settings.agent_chat_max_depth), 999002))
+    assert fe_count() == n, "max should be the hard stop"
+
+
 def main() -> None:
     registry.setup()
     ch0 = settings.team_chat_id
@@ -102,6 +150,7 @@ def main() -> None:
         assert not any(marker in d[2] for d in delivered), "message re-delivered"
 
         _autoreply()
+        _edge_cases()
     finally:
         settings.team_chat_id = ch0
         settings.enable_agent_chat, settings.agent_chat_max_depth = ac0, depth0

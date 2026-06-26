@@ -13,12 +13,17 @@ import hashlib
 import hmac
 import json
 import logging
+import time
 from typing import Optional
 from urllib.parse import parse_qsl
 
 from src.config import settings
 
 logger = logging.getLogger(__name__)
+
+# Reject initData older than this. A Mini App launch uses its initData right away,
+# so a day-long window is safe while still capping replay of a captured payload.
+_MAX_AGE_SECONDS = 24 * 3600
 
 
 def validate_init_data(init_data: str, bot_token: str) -> Optional[dict]:
@@ -37,6 +42,12 @@ def validate_init_data(init_data: str, bot_token: str) -> Optional[dict]:
     secret_key = hmac.new(b"WebAppData", bot_token.encode(), hashlib.sha256).digest()
     calc = hmac.new(secret_key, data_check_string.encode(), hashlib.sha256).hexdigest()
     if not hmac.compare_digest(calc, received):
+        return None
+    # Anti-replay: a valid-but-stale captured payload must not authenticate forever.
+    try:
+        if abs(time.time() - int(pairs.get("auth_date", 0))) > _MAX_AGE_SECONDS:
+            return None
+    except (TypeError, ValueError):
         return None
     if "user" in pairs:
         try:

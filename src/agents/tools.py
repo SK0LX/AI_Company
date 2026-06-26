@@ -197,9 +197,15 @@ def _self_edit_protected(rel_path: str) -> bool:
     top = norm.split("/", 1)[0]
     if top in (".git", "data"):
         return True
-    if norm == ".env" or norm.startswith(".env."):
+    base = norm.rsplit("/", 1)[-1]
+    # env files at ANY depth (config/.env, services/.env.prod, …), not just root.
+    if base == ".env" or base.startswith(".env."):
         return True
-    if norm.endswith(".key") or "secret" in norm:
+    # secret material by file name / extension, anywhere. Matched on the basename
+    # (not a broad substring) so legit sources like `password_hashing.py` pass.
+    if base.endswith((".key", ".pem", ".crt", ".p12", ".pfx")) or base in ("id_rsa", "credentials.json"):
+        return True
+    if "secret" in norm:
         return True
     return False
 
@@ -208,7 +214,10 @@ def _deny_protected(target: str) -> str:
     """Return a denial string if ``target`` is protected in self-edit mode, else ""."""
     if not _self_edit.get():
         return ""
-    rel = os.path.relpath(target, _workspace_root())
+    # Resolve symlinks first: a link inside the repo must not smuggle a write into
+    # .git/.env/secrets via a path that *looks* innocent.
+    root = os.path.realpath(_workspace_root())
+    rel = os.path.relpath(os.path.realpath(target), root)
     if _self_edit_protected(rel):
         return f"[denied: '{rel}' is protected in self-edit mode]"
     return ""
@@ -228,9 +237,13 @@ def current_project_files() -> list[str]:
 
 
 def _safe_path(rel_path: str) -> str:
-    """Resolve ``rel_path`` inside the workspace, rejecting any escape attempt."""
-    root = _workspace_root()
-    candidate = os.path.abspath(os.path.join(root, rel_path))
+    """Resolve ``rel_path`` inside the workspace, rejecting any escape attempt.
+
+    Uses ``realpath`` so a symlink (one the agent itself may have created) that
+    points outside the workspace is rejected — ``abspath`` alone would keep the
+    link's innocent-looking literal path and let the write land outside."""
+    root = os.path.realpath(_workspace_root())
+    candidate = os.path.realpath(os.path.join(root, rel_path))
     if candidate != root and not candidate.startswith(root + os.sep):
         raise ValueError(
             f"path {rel_path!r} escapes the workspace; use a path inside it"
@@ -479,7 +492,9 @@ def say(text: str) -> str:
     bot, so it shows up as you."""
     from src import outbox
 
-    agent = _current_agent.get() or "system"
+    agent = _current_agent.get()
+    if not agent:
+        return "[say недоступен: нет текущего агента]"
     return "[отправлено в чат]" if outbox.enqueue_say(agent, text) else "[пустое сообщение]"
 
 

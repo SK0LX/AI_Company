@@ -14,8 +14,10 @@ import os
 from contextlib import asynccontextmanager
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse
+import hmac
+
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -116,6 +118,48 @@ async def _lifespan(app: FastAPI):
 
 
 app = FastAPI(title="AI IT Company — Admin", lifespan=_lifespan)
+
+# Hosts treated as "the operator itself": loopback + Starlette's in-process test
+# client. A network client (incl. a Caddy/reverse-proxy hop) never has these, so
+# it must present a token or Mini App initData to mutate anything.
+_LOCAL_HOSTS = {"127.0.0.1", "::1", "localhost", "testclient"}
+
+
+def _authorized_mutation(request: Request) -> bool:
+    """Whether this state-changing /api request may proceed (see settings.api_token)."""
+    from src.config import settings
+
+    init = request.headers.get("x-telegram-init-data")
+    if init:
+        from src import tg_auth
+
+        if tg_auth.authenticate(init):
+            return True
+    if settings.api_token:
+        token = request.headers.get("x-api-token") or ""
+        auth = request.headers.get("authorization") or ""
+        if auth.lower().startswith("bearer "):
+            token = token or auth[7:].strip()
+        return bool(token) and hmac.compare_digest(token, settings.api_token)
+    # No token configured → allow only local/in-process callers, reject the network.
+    host = request.client.host if request.client else ""
+    return host in _LOCAL_HOSTS
+
+
+@app.middleware("http")
+async def _require_auth(request: Request, call_next):
+    """Gate every mutating /api/ call. Reads stay open; /api/tg/auth is the login
+    itself so it's exempt."""
+    path = request.url.path
+    if (request.method in ("POST", "PUT", "PATCH", "DELETE")
+            and path.startswith("/api/") and path != "/api/tg/auth"
+            and not _authorized_mutation(request)):
+        return JSONResponse(
+            {"detail": "authentication required: set API_TOKEN and send X-Api-Token, "
+                       "or open via the Telegram Mini App"},
+            status_code=401,
+        )
+    return await call_next(request)
 
 
 # --- schemas ----------------------------------------------------------------

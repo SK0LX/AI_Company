@@ -1498,7 +1498,12 @@ async def arun_specialist(role: str, text: str, project: str = "") -> str:
                 config={"recursion_limit": 60},
             )
         finally:
-            set_self_edit(False)
+            # Always clear this run's identity/root, even on error — otherwise the
+            # next call in the same async context inherits the wrong agent, project
+            # folder or self-edit root (breaks @requires audit + file sandboxing).
+            set_self_edit(False, root="")
+            set_current_agent("")
+            set_project_subdir("")
         reply = _content_to_text(result["messages"][-1].content) or "..."
         # In self-edit mode the "project" is the whole repo, so don't dump every
         # file — the maintainer's own git diff / report is the ground truth.
@@ -1685,6 +1690,10 @@ async def agroup_reply(
         except Exception:  # noqa: BLE001
             logger.exception("group tool reply failed for %s", slug)
             reply = "Не получилось доделать — гляну ещё раз."
+        finally:
+            # Don't leak this agent's identity/folder into the next group reply.
+            set_current_agent("")
+            set_project_subdir("")
         if settings.translate_chatter:
             reply = await aensure_russian(reply)
         return reply

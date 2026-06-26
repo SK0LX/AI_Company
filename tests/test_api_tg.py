@@ -9,6 +9,7 @@ import hmac
 import json
 import os
 import sys
+import time
 from urllib.parse import urlencode
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -20,7 +21,7 @@ TOKEN = "999999:IT-test-token"
 
 
 def _signed(user: dict) -> str:
-    fields = {"auth_date": "1700000000", "user": json.dumps(user, separators=(",", ":"))}
+    fields = {"auth_date": str(int(time.time())), "user": json.dumps(user, separators=(",", ":"))}
     dcs = "\n".join(f"{k}={fields[k]}" for k in sorted(fields))
     secret = hmac.new(b"WebAppData", TOKEN.encode(), hashlib.sha256).digest()
     h = hmac.new(secret, dcs.encode(), hashlib.sha256).hexdigest()

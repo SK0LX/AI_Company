@@ -9,6 +9,7 @@ import hmac
 import json
 import os
 import sys
+import time
 from urllib.parse import urlencode
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -19,7 +20,9 @@ from src.config import settings
 TOKEN = "123456:TEST-bot-token"
 
 
-def _signed_init_data(user: dict, auth_date: str = "1700000000") -> str:
+def _signed_init_data(user: dict, auth_date: str = "") -> str:
+    # Default to "now" so the freshness check passes; tests override to go stale.
+    auth_date = auth_date or str(int(time.time()))
     fields = {"auth_date": auth_date, "user": json.dumps(user, separators=(",", ":"))}
     data_check = "\n".join(f"{k}={fields[k]}" for k in sorted(fields))
     secret = hmac.new(b"WebAppData", TOKEN.encode(), hashlib.sha256).digest()
@@ -42,6 +45,13 @@ def main() -> None:
     assert tg_auth.validate_init_data(good, "999:other") is None
     # empty fails
     assert tg_auth.validate_init_data("", TOKEN) is None
+
+    # anti-replay: a correctly-signed but STALE payload is rejected
+    stale = _signed_init_data(user, auth_date=str(int(time.time()) - tg_auth._MAX_AGE_SECONDS - 60))
+    assert tg_auth.validate_init_data(stale, TOKEN) is None
+    # a payload with no auth_date at all is rejected too
+    no_date = _signed_init_data(user, auth_date="0")
+    assert tg_auth.validate_init_data(no_date, TOKEN) is None
 
     # authorize through settings (point bot token + allow-list at our test values)
     settings.telegram_bot_token = TOKEN

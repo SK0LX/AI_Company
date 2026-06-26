@@ -115,10 +115,50 @@ def _tools() -> None:
         collab.delete_task(tid)
 
 
+def _release_token() -> None:
+    """release_task with a token is compare-and-set: a stale token can't release."""
+    tid = collab.create_task("ut-token", created_by="ceo")
+    try:
+        tok = locks.claim_task(tid, "developer")
+        assert tok
+        assert locks.release_task(tid, "developer", token="deadbeef") is False  # stale
+        assert locks.task_holder(tid) == "developer"  # still held
+        assert locks.release_task(tid, "developer", token=tok) is True  # right token
+        assert locks.task_holder(tid) is None
+    finally:
+        collab.delete_task(tid)
+
+
+def _resource_lock_race_insert() -> None:
+    """8 threads racing to first-acquire a brand-new key → exactly one winner."""
+    key = "ut-race-lock-" + secrets.token_hex(4)
+    winners: list[tuple[int, str]] = []
+    barrier = threading.Barrier(8)
+
+    def worker(i: int) -> None:
+        barrier.wait()  # maximize real contention on the INSERT
+        tok = locks.acquire_lock(key, agent=f"a{i}")
+        if tok:
+            winners.append((i, tok))
+
+    threads = [threading.Thread(target=worker, args=(i,)) for i in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    try:
+        assert len(winners) == 1, f"expected exactly 1 lock winner, got {len(winners)}"
+    finally:
+        for i, _tok in winners:
+            locks.release_lock(key, agent=f"a{i}")
+
+
 def main() -> None:
     registry.setup()
     _task_claim()
+    _release_token()
     _resource_lock()
+    _resource_lock_race_insert()
     _race_never_two_winners()
     _tools()
     print("locks tests: OK")

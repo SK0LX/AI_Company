@@ -402,6 +402,30 @@
   </div>
 
 <script>
+// Attach auth to every /api/ call: the Telegram Mini App signature when we're
+// inside Telegram, plus an operator API token if one was saved (?token=… once, or
+// localStorage 'apiToken'). Harmless locally (the backend lets localhost through).
+(function () {
+  try {
+    const q = new URLSearchParams(location.search).get('token');
+    if (q) localStorage.setItem('apiToken', q);
+  } catch (e) {}
+  const initData = (window.Telegram && Telegram.WebApp && Telegram.WebApp.initData) || '';
+  const _fetch = window.fetch;
+  window.fetch = function (input, init) {
+    init = init || {};
+    const url = typeof input === 'string' ? input : (input && input.url) || '';
+    if (url.startsWith('/api/')) {
+      const h = new Headers(init.headers || {});
+      if (initData) h.set('X-Telegram-Init-Data', initData);
+      const tok = (function () { try { return localStorage.getItem('apiToken'); } catch (e) { return null; } })();
+      if (tok) h.set('X-Api-Token', tok);
+      init.headers = h;
+    }
+    return _fetch(input, init);
+  };
+})();
+
 const API = '/api/agents';
 let editingSlug = null;
 

@@ -69,10 +69,51 @@ def _api() -> None:
         assert d is not None and d["worker"] is True
 
 
+def _failure_requeue() -> None:
+    """A runner that throws must return the task to the queue, not strand it
+    'in_progress', and must release the claim."""
+    tid = collab.create_task("задача которая упадёт", created_by="ceo", owner="developer")
+    try:
+        async def boom(slug: str, t: int, text: str) -> str:
+            raise RuntimeError("job exploded")
+
+        res = asyncio.run(worker.run_worker("developer", runner=boom, once=True))
+        assert res == tid                                   # it claimed + attempted
+        assert collab.get_task(tid)["status"] == "new"      # requeued, not stuck
+        assert locks.task_holder(tid) is None               # claim released
+    finally:
+        collab.delete_task(tid)
+
+
+def _budget_blocked() -> None:
+    """A budget-blocked agent takes no work (no claim, no run)."""
+    from src import budget
+
+    tid = collab.create_task("дорогая задача", created_by="ceo", owner="developer")
+    orig = budget.blocked
+    budget.blocked = lambda slug: True  # type: ignore[assignment]
+    ran: list[str] = []
+    try:
+        async def stub(slug: str, t: int, text: str) -> str:
+            ran.append(slug)
+            return "ok"
+
+        res = asyncio.run(worker.run_worker("developer", runner=stub, once=True))
+        assert res is None                                  # nothing taken
+        assert ran == []                                    # work never ran
+        assert collab.get_task(tid)["status"] != "done"
+        assert locks.task_holder(tid) is None               # not claimed
+    finally:
+        budget.blocked = orig  # type: ignore[assignment]
+        collab.delete_task(tid)
+
+
 def main() -> None:
     registry.setup()
     _basic()
     _respects_existing_claim()
+    _failure_requeue()
+    _budget_blocked()
     _api()
     print("worker tests: OK")
 
