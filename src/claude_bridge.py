@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 from typing import Awaitable, Callable, Optional
 
 logger = logging.getLogger(__name__)
@@ -66,11 +67,17 @@ async def run_claude(
     agents: Optional[dict] = None,
     model: Optional[str] = None,
     permission_mode: str = "acceptEdits",
+    use_subscription: bool = False,
     on_step: Optional[StepCb] = None,
     timeout: float = 1200.0,
 ) -> dict:
     """Run one task via `claude -p` (stream-json) and return
-    {ok, answer, session_id, cost_usd, error}. Calls on_step(kind, text) live."""
+    {ok, answer, session_id, cost_usd, error}. Calls on_step(kind, text) live.
+
+    ``use_subscription``: claude prefers ANTHROPIC_API_KEY over a logged-in
+    subscription whenever the env var is present. Set this to drop the key from the
+    subprocess so it falls back to the `claude login` credentials (the cheap path).
+    """
     cmd = ["claude", "-p", prompt, "--output-format", "stream-json", "--verbose",
            "--permission-mode", permission_mode]
     if agents:
@@ -80,8 +87,10 @@ async def run_claude(
     if model:
         cmd += ["--model", model]
 
+    env = {k: v for k, v in os.environ.items()
+           if not (use_subscription and k == "ANTHROPIC_API_KEY")}
     proc = await asyncio.create_subprocess_exec(
-        *cmd, cwd=cwd,
+        *cmd, cwd=cwd, env=env,
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
     )
     answer, session_id, cost, ok, err = "", None, 0.0, False, ""
