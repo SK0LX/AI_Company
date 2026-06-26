@@ -602,20 +602,46 @@ def office_state() -> dict:
             slug = by_slug.get(e.actor_agent_id)
             if slug and slug not in last_seen:
                 last_seen[slug] = e.ts.isoformat()
+    from src import presence
+
+    live = presence.snapshot()
     graph = interaction_graph()
     nodes = []
     for n in graph["nodes"]:
         agent = roster.get(n["slug"])
+        act = live.get(n["slug"])
+        is_busy = n["slug"] in busy
+        # "status"/"note" = what the agent is doing RIGHT NOW (the live "thought"),
+        # falling back to its in-progress board task when there's no live signal.
+        status = act["status"] if act else ("working" if is_busy else "idle")
+        note = (act["note"] if act and act["note"] else busy.get(n["slug"])) or ""
         nodes.append({
             "slug": n["slug"],
             "name": n["name"],
             "role": agent.role if agent else "",
             "enabled": agent.enabled if agent else True,
-            "busy": n["slug"] in busy,
+            "busy": is_busy,
+            "active": status != "idle",
+            "status": status,
+            "note": note,
             "current_task": busy.get(n["slug"]),
             "last_seen": last_seen.get(n["slug"]),
         })
     return {"nodes": nodes, "edges": graph["edges"]}
+
+
+def record_handoff(frm: str, to: str, reason: str = "") -> None:
+    """Persist a group-chat hand-off A→B as an accepted delegation, so the team
+    interaction shows up on the office/interaction graph (not just CEO delegations)."""
+    fid, tid = _agent_id(frm), _agent_id(to)
+    if not fid or not tid or fid == tid:
+        return
+    with get_session() as session:
+        session.add(Delegation(
+            from_agent_id=fid, to_agent_id=tid, kind="task",
+            status="accepted", reason=(reason or "")[:200],
+        ))
+        session.commit()
 
 
 def interaction_graph() -> dict:

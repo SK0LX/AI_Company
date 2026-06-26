@@ -99,6 +99,7 @@
     .office-side .fi { background:var(--bg); }
     .onode-name { fill:var(--text); font-size:12px; font-weight:600; }
     .onode-role { fill:var(--muted); font-size:10px; }
+    .onode-note { fill:var(--ok); font-size:10px; font-style:italic; }
     .onode-init { fill:#fff; font-size:15px; font-weight:700; }
     .oedge { stroke:#4a5570; }
     @media (max-width:860px) { .office { flex-direction:column; } .office-side { max-width:none; } }
@@ -634,12 +635,15 @@ async function loadOffice() {
   const cells = nodes.map(n => {
     const p = pos[n.slug]; const h = hueOf(n.slug);
     const fill = n.enabled ? `hsl(${h} 55% 45%)` : '#2a2f3a';
-    const dot = n.busy ? 'var(--ok)' : (n.enabled ? 'var(--muted)' : 'var(--danger)');
-    const pulse = n.busy ? `
+    const dot = n.active ? 'var(--ok)' : (n.enabled ? 'var(--muted)' : 'var(--danger)');
+    const pulse = n.active ? `
       <circle cx="${p.x}" cy="${p.y}" r="30" fill="none" stroke="hsl(${h} 70% 55%)" stroke-width="2">
         <animate attributeName="r" values="30;46" dur="1.8s" repeatCount="indefinite"/>
         <animate attributeName="opacity" values="0.6;0" dur="1.8s" repeatCount="indefinite"/>
       </circle>` : '';
+    // live "thought": what the agent is doing right now, under its name
+    const note = (n.active && n.note)
+      ? `<text class="onode-note" x="${p.x}" y="${p.y+76}" text-anchor="middle">${esc(String(n.note).slice(0,42))}</text>` : '';
     const ring = n.slug === 'ceo' ? `<circle cx="${p.x}" cy="${p.y}" r="33" fill="none" stroke="var(--accent)" stroke-width="2"/>` : '';
     const task = n.busy && n.current_task
       ? `<title>${esc(n.name)} — ${esc(n.current_task)}</title>` : `<title>${esc(n.name)}</title>`;
@@ -650,6 +654,7 @@ async function loadOffice() {
       <circle cx="${p.x+20}" cy="${p.y-20}" r="5" fill="${dot}" stroke="#0c0f17" stroke-width="1.5"/>
       <text class="onode-name" x="${p.x}" y="${p.y+48}" text-anchor="middle">${esc(n.name)}</text>
       <text class="onode-role" x="${p.x}" y="${p.y+62}" text-anchor="middle">${esc(n.role)}</text>
+      ${note}
     </g>`;
   }).join('');
   $('office').innerHTML = `

@@ -32,6 +32,26 @@ logger = logging.getLogger(__name__)
 _HISTORY_TURNS = 8  # how many (user+agent) messages to keep per personal chat
 _RECONCILE_EVERY = 15  # seconds between checks for newly added/removed agent bots
 
+# A short, role-flavoured "what am I doing" line for the live office map.
+_WORK_NOTES = [
+    ("analyst", "собирает требования…"), ("business", "уточняет задачу…"),
+    ("system", "проектирует решение…"), ("frontend", "верстает интерфейс…"),
+    ("backend", "пишет backend…"), ("developer", "пишет код…"),
+    ("tester", "проверяет…"), ("qa", "тестирует…"), ("review", "ревьюит…"),
+    ("design", "готовит макеты…"),
+]
+
+
+def _work_note(slug: str) -> str:
+    from src.registry import registry
+
+    a = registry.get(slug)
+    hay = f"{slug} {(a.role if a else '')}".lower()
+    for key, note in _WORK_NOTES:
+        if key in hay:
+            return note
+    return "работает над задачей…"
+
 
 class TelegramManager:
     """Builds and runs the team bot + every agent's personal bot together.
@@ -206,39 +226,51 @@ class TelegramManager:
             if isinstance(d, tuple) and d[0] and d[1]
         ]
         logger.info("group: responders = %s", [s for s, _ in responders] or "(nobody)")
+        from src import presence
         for i, (slug, reply) in enumerate(responders):
             if i:
                 await asyncio.sleep(0.9)  # natural stagger so they don't land at once
+            presence.set_activity(slug, "talking", "отвечает в чате…")  # live on the office map
             await self._group_post(chat, slug, reply)
+            presence.clear_activity(slug)
 
     async def _run_work_chain(self, chat, starter: str, transcript: str, agroup_reply) -> None:
         """Flow a work request across the team: the first agent does its part, then
         may handoff('<teammate>', task) to pass the rest on (analyst → developer →
         tester …). Each agent posts as itself; bounded by group_handoff_max_depth so
         it can't loop or fan out forever."""
+        from src import collab, presence
         from src.agents import tools as agent_tools
         from src.config import settings
 
         worker = starter
         task = transcript
         depth = 0
-        while worker:
-            agent_tools.clear_handoff(worker)
-            reply = await agroup_reply(
-                worker, task, work_intent=True, project=f"group-{chat.id}"
-            )
-            await self._group_post(chat, worker, reply)
-            nxt = agent_tools.take_handoff(worker)
-            if not nxt or depth >= settings.group_handoff_max_depth:
-                break
-            to_slug, to_task = nxt
-            if to_slug == worker or to_slug not in self._agent_apps:
-                break  # no self-handoff; the target must be a present agent
-            # visible connector, then carry the chat context + the ask to the next
-            await self._group_post(chat, worker, f"↪️ передаю @{registry.label(to_slug)}: {to_task[:160]}")
-            task = f"{transcript}\n\n[Передано тебе от {registry.label(worker)}]: {to_task}"
-            worker = to_slug
-            depth += 1
+        try:
+            while worker:
+                agent_tools.clear_handoff(worker)
+                presence.set_activity(worker, "working", _work_note(worker))  # live "thought"
+                reply = await agroup_reply(
+                    worker, task, work_intent=True, project=f"group-{chat.id}"
+                )
+                await self._group_post(chat, worker, reply)
+                nxt = agent_tools.take_handoff(worker)
+                if not nxt or depth >= settings.group_handoff_max_depth:
+                    break
+                to_slug, to_task = nxt
+                if to_slug == worker or to_slug not in self._agent_apps:
+                    break  # no self-handoff; the target must be a present agent
+                # record the edge for the graph + show the hand-off live, then carry
+                # the chat context + the ask to the next agent.
+                collab.record_handoff(worker, to_slug, to_task)
+                presence.set_activity(worker, "handoff", f"↪️ {registry.label(to_slug)}")
+                await self._group_post(chat, worker, f"↪️ передаю @{registry.label(to_slug)}: {to_task[:160]}")
+                task = f"{transcript}\n\n[Передано тебе от {registry.label(worker)}]: {to_task}"
+                presence.clear_activity(worker)  # previous agent goes idle as the baton passes
+                worker = to_slug
+                depth += 1
+        finally:
+            presence.clear_activity(worker)
 
     async def _group_post(self, chat, slug: str, reply: str) -> None:
         """Send one agent's group message via its own bot (with dedup + echo guard)."""
