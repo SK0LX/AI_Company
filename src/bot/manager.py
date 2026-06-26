@@ -186,10 +186,7 @@ class TelegramManager:
                 )
                 worker = pick if (pick and pick in self._agent_apps) else present[0]
             logger.info("group: work request -> %s", worker)
-            reply = await agroup_reply(
-                worker, transcript, work_intent=True, project=f"group-{chat.id}"
-            )
-            await self._group_post(chat, worker, reply)
+            await self._run_work_chain(chat, worker, transcript, agroup_reply)
             return
 
         # Relevance gate v2 (0-token heuristic): only plausibly-relevant agents
@@ -213,6 +210,35 @@ class TelegramManager:
             if i:
                 await asyncio.sleep(0.9)  # natural stagger so they don't land at once
             await self._group_post(chat, slug, reply)
+
+    async def _run_work_chain(self, chat, starter: str, transcript: str, agroup_reply) -> None:
+        """Flow a work request across the team: the first agent does its part, then
+        may handoff('<teammate>', task) to pass the rest on (analyst → developer →
+        tester …). Each agent posts as itself; bounded by group_handoff_max_depth so
+        it can't loop or fan out forever."""
+        from src.agents import tools as agent_tools
+        from src.config import settings
+
+        worker = starter
+        task = transcript
+        depth = 0
+        while worker:
+            agent_tools.clear_handoff(worker)
+            reply = await agroup_reply(
+                worker, task, work_intent=True, project=f"group-{chat.id}"
+            )
+            await self._group_post(chat, worker, reply)
+            nxt = agent_tools.take_handoff(worker)
+            if not nxt or depth >= settings.group_handoff_max_depth:
+                break
+            to_slug, to_task = nxt
+            if to_slug == worker or to_slug not in self._agent_apps:
+                break  # no self-handoff; the target must be a present agent
+            # visible connector, then carry the chat context + the ask to the next
+            await self._group_post(chat, worker, f"↪️ передаю @{registry.label(to_slug)}: {to_task[:160]}")
+            task = f"{transcript}\n\n[Передано тебе от {registry.label(worker)}]: {to_task}"
+            worker = to_slug
+            depth += 1
 
     async def _group_post(self, chat, slug: str, reply: str) -> None:
         """Send one agent's group message via its own bot (with dedup + echo guard)."""

@@ -161,6 +161,9 @@ class Settings(BaseSettings):
     # the group chat. 10 was too low for real tasks (the agent dead-ends with
     # "needs more steps"); 40 lets it finish while still bounding a runaway.
     group_work_max_steps: int = 40
+    # How many times a group work-request may be handed off down the team
+    # (analyst → developer → tester …) before the chain stops. Bounds cost/loops.
+    group_handoff_max_depth: int = 5
     group_cooldown: int = 6  # min seconds between two agent posts in a chat
     group_ambient_prob: float = 0.15  # chance to consider chiming into idle chatter
     group_history_turns: int = 16  # recent group messages kept as context

@@ -574,6 +574,7 @@ def _tool_agent(role: str):
         board_set_status,
         budget_remaining,
         delete_file,
+        handoff,
         lock_acquire,
         lock_release,
         lock_who,
@@ -618,7 +619,7 @@ def _tool_agent(role: str):
     # Task board: every tool agent can VIEW it + COORDINATE (claim/lock/budget);
     # mutating the board (status/delete/clear) needs can_manage_board.
     board_tools = [board_overview, board_claim, board_release,
-                   lock_acquire, lock_release, lock_who, budget_remaining, say]
+                   lock_acquire, lock_release, lock_who, budget_remaining, say, handoff]
     base_prompt += (
         "\n\nCOORDINATION — never double-work with other agents: BEFORE you start on "
         "a shared task or project, CLAIM it (board_claim) or lock the resource "
@@ -626,7 +627,13 @@ def _tool_agent(role: str):
         "board_release / lock_release when done. Check budget_remaining before "
         "expensive work and self-throttle near the limit. Use say('…') to speak in "
         "the team chat as yourself — address a teammate by name when you need "
-        "something from them (e.g. say('@developer, нужен endpoint /react'))."
+        "something from them (e.g. say('@developer, нужен endpoint /react')).\n"
+        "STAY IN YOUR LANE — do the part that fits YOUR role, then HAND OFF the rest: "
+        "call handoff('<teammate>', '<concrete next step>') to pass the work to the "
+        "right colleague (e.g. an analyst clarifies requirements then "
+        "handoff('developer', 'реализуй …'); the developer builds then "
+        "handoff('tester', 'проверь …')). Don't do another role's job yourself — "
+        "pass it on, and the task flows across the team."
     )
     if _perm(role, "can_manage_board"):
         board_tools += [board_set_status, board_delete, board_clear]

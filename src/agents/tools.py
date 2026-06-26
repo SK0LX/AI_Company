@@ -22,6 +22,7 @@ import os
 import re
 import sys
 import tempfile
+from typing import Optional
 
 from langchain_core.tools import tool
 
@@ -57,6 +58,22 @@ _self_edit: contextvars.ContextVar[bool] = contextvars.ContextVar(
 _self_edit_root: contextvars.ContextVar[str] = contextvars.ContextVar(
     "self_edit_root", default=""
 )
+
+# Hand-offs requested by the `handoff` tool, keyed by the requesting agent's slug.
+# NOTE: a plain dict (not a contextvar) on purpose — LangChain runs sync tools in a
+# COPIED context, so a contextvar set inside the tool would not propagate back to
+# the orchestrator. The dict (GIL-safe) does. The group orchestrator clears the key
+# before an agent's turn and reads it right after to chain the next agent.
+_handoffs: dict[str, tuple] = {}
+
+
+def clear_handoff(slug: str) -> None:
+    _handoffs.pop(slug, None)
+
+
+def take_handoff(slug: str) -> Optional[tuple]:
+    """Return + clear the (to_slug, task) hand-off requested by ``slug``, or None."""
+    return _handoffs.pop(slug, None)
 
 
 def set_current_agent(slug: str) -> None:
@@ -502,6 +519,47 @@ def say(text: str) -> str:
     if not agent:
         return "[say недоступен: нет текущего агента]"
     return "[отправлено в чат]" if outbox.enqueue_say(agent, text) else "[пустое сообщение]"
+
+
+def _resolve_agent(name: str) -> str:
+    """Map a free-form teammate reference (slug / label / role, with or without @)
+    to an enabled agent's slug, or "" if none matches."""
+    from src.registry import registry
+
+    q = (name or "").strip().lower().lstrip("@")
+    if not q:
+        return ""
+    agents = registry.list_agents(enabled_only=True)
+    for a in agents:  # exact match on slug / display label / role
+        if q in (a.slug.lower(), (registry.label(a.slug) or "").lower(), (a.role or "").lower()):
+            return a.slug
+    for a in agents:  # then a loose substring match ("разработчик" -> developer)
+        if q in a.slug.lower() or q in (registry.label(a.slug) or "").lower() or q in (a.role or "").lower():
+            return a.slug
+    return ""
+
+
+@tool
+def handoff(to_agent: str, task: str) -> str:
+    """Hand the current work off to the TEAMMATE who should do the next part —
+    use this instead of doing another role's job yourself. ``to_agent`` is their
+    name, role or slug (e.g. 'developer', 'разработчик', 'тестировщик'); ``task``
+    is a short, concrete instruction. They pick it up right after your turn, so the
+    work flows across the team (analyst → developer → tester)."""
+    from src.registry import registry
+
+    me = _current_agent.get() or ""
+    task = (task or "").strip()
+    target = _resolve_agent(to_agent)
+    if not target:
+        return f"[не нашёл такого агента: '{to_agent}']"
+    if target == me:
+        return "[нельзя передать задачу самому себе — сделай её или передай другому]"
+    if not task:
+        return "[нужна конкретная задача для передачи]"
+    if me:
+        _handoffs[me] = (target, task)
+    return f"[передал @{registry.label(target)}: {task[:120]}]"
 
 
 @tool
