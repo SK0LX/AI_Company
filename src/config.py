@@ -167,6 +167,13 @@ class Settings(BaseSettings):
     # lifecycle into (created / delegated / in-progress / done / cancelled), e.g.
     # "✅ Задача #102 закрыта · исполнитель: … · от: …". 0 = disabled.
     task_channel_id: int = 0
+
+    # Agent↔agent auto-conversation: when an agent's `say` message addresses another
+    # agent by name, that agent auto-replies (a real back-and-forth, like the video).
+    # OFF by default — it spends budget on its own. Loops are bounded by a strict
+    # chain-depth cap: each auto-reply increments depth and stops at the cap.
+    enable_agent_chat: bool = False
+    agent_chat_max_depth: int = 3
     proactive_min_interval: int = 30
     proactive_max_per_window: int = 5  # per agent
     proactive_window: int = 300  # seconds for the per-agent rate window

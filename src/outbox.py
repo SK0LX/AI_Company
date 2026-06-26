@@ -12,6 +12,7 @@ the Telegram bots — sends it.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from typing import Awaitable, Callable, Optional
 
@@ -26,10 +27,14 @@ logger = logging.getLogger(__name__)
 
 # poster(from_agent_slug, chat_id, text) -> None  (sends via that agent's bot)
 Poster = Callable[[str, int, str], Awaitable[None]]
+# decider(addressed_slug, transcript) -> (respond?, reply_text)
+Decider = Callable[[str, str], Awaitable[tuple[bool, str]]]
 
 
-def enqueue_say(agent: str, text: str, *, chat_id: Optional[int] = None) -> Optional[int]:
-    """Queue a chat message from ``agent`` for delivery. Returns the row id."""
+def enqueue_say(agent: str, text: str, *, chat_id: Optional[int] = None,
+                depth: int = 0) -> Optional[int]:
+    """Queue a chat message from ``agent`` for delivery. ``depth`` is the
+    auto-reply chain position (0 = a fresh agent-initiated message). Returns the id."""
     text = (text or "").strip()
     if not text:
         return None
@@ -37,7 +42,8 @@ def enqueue_say(agent: str, text: str, *, chat_id: Optional[int] = None) -> Opti
     a = registry.get(agent)
     with get_session() as session:
         row = Message(from_agent_id=a.id if a else None, chat_id=target or None,
-                      kind="CHAT", text=text[:4000], sent=False)
+                      kind="CHAT", text=text[:4000], sent=False,
+                      meta_json=json.dumps({"depth": int(depth)}))
         session.add(row)
         session.commit()
         session.refresh(row)
@@ -48,11 +54,28 @@ def _slug_by_id() -> dict:
     return {a.id: a.slug for a in registry.list_agents(enabled_only=False) if a.id is not None}
 
 
-class OutboxService:
-    """Polls the DB for unsent agent chat messages and delivers them."""
+def _depth_of(m: Message) -> int:
+    try:
+        return int(json.loads(m.meta_json or "{}").get("depth", 0))
+    except Exception:  # noqa: BLE001
+        return 0
 
-    def __init__(self, poster: Poster) -> None:
+
+async def _default_decider(slug: str, transcript: str) -> tuple[bool, str]:
+    """The live decider: the addressed agent decides whether/what to reply."""
+    from src.graph.team_graph import agroup_decide
+
+    return await agroup_decide(slug, transcript)
+
+
+class OutboxService:
+    """Polls the DB for unsent agent chat messages and delivers them. When an agent
+    message addresses another agent (and ``enable_agent_chat`` is on), the addressed
+    agent auto-replies — a bounded back-and-forth (chain depth capped)."""
+
+    def __init__(self, poster: Poster, decider: Optional[Decider] = None) -> None:
         self._poster = poster
+        self._decider = decider or _default_decider
         self._task: Optional[asyncio.Task] = None
         self._stop: Optional[asyncio.Event] = None
 
@@ -83,7 +106,31 @@ class OutboxService:
                         session.add(row)
                         session.commit()
                 sent += 1
+                await self._maybe_autoreply(slug, m, chat_id)
         return sent
+
+    async def _maybe_autoreply(self, sender: str, m: Message, chat_id: Optional[int]) -> None:
+        """If this message addresses another agent (and agent-chat is on), have that
+        agent reply — bounded by the chain-depth cap so it can't loop forever."""
+        if not settings.enable_agent_chat or not chat_id:
+            return
+        depth = _depth_of(m)
+        if depth >= settings.agent_chat_max_depth:
+            return
+        from src import group_chat as gc
+
+        roster = [(a.slug, registry.label(a.slug), a.role)
+                  for a in registry.list_agents(enabled_only=True)]
+        target = gc.detect_addressed(m.text, roster)
+        if not target or target == sender:
+            return
+        try:
+            respond, reply = await self._decider(target, f"{registry.label(sender)}: {m.text}")
+        except Exception:  # noqa: BLE001 - a decider hiccup just ends the thread
+            logger.exception("auto-reply decider failed for %s", target)
+            return
+        if respond and reply:
+            enqueue_say(target, reply, chat_id=chat_id, depth=depth + 1)
 
     async def _run(self) -> None:
         assert self._stop is not None
