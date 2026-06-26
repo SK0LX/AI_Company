@@ -80,6 +80,11 @@ class Settings(BaseSettings):
     enable_code_execution: bool = False
     code_exec_timeout: int = 15
 
+    # Let agents READ public git repositories (clone read-only, no shell, no write)
+    # so they can actually analyze a project from its URL. Only HTTPS public hosts
+    # are allowed and clones are sandboxed/size-capped. OFF by default.
+    enable_repo_read: bool = False
+
     # Let agents run real shell commands (npm install, pytest, docker compose,
     # ...) in the project folder. This executes model-chosen commands ON YOUR
     # MACHINE, so it is OFF by default and every command requires your approval

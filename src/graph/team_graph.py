@@ -583,6 +583,8 @@ def _tool_agent(role: str):
         move_file,
         read_file,
         read_memory,
+        repo_file,
+        repo_tree,
         run_python,
         run_shell,
         save_memory,
@@ -620,6 +622,13 @@ def _tool_agent(role: str):
     # mutating the board (status/delete/clear) needs can_manage_board.
     board_tools = [board_overview, board_claim, board_release,
                    lock_acquire, lock_release, lock_who, budget_remaining, say, handoff]
+    if settings.enable_repo_read:  # read a real project's code from its URL
+        board_tools += [repo_tree, repo_file]
+        base_prompt += (
+            "\n\nTo analyze a real project from a git URL, READ it: repo_tree('<https "
+            "url>') for the layout + README, then repo_file('<url>', '<path>') for "
+            "specific files. Read-only — base your analysis on the actual code."
+        )
     base_prompt += (
         "\n\nCOORDINATION — never double-work with other agents: BEFORE you start on "
         "a shared task or project, CLAIM it (board_claim) or lock the resource "

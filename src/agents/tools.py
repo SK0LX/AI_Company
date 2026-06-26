@@ -563,6 +563,31 @@ def handoff(to_agent: str, task: str) -> str:
 
 
 @tool
+def repo_tree(git_url: str) -> str:
+    """READ a PUBLIC git repo to analyze a real project: returns its file tree +
+    README. ``git_url`` is the https URL (e.g. https://github.com/user/project).
+    Read-only — it clones and reads, never writes or runs anything. Call this first
+    to see the layout, then repo_file to read specific files."""
+    if not settings.enable_repo_read:
+        return "[чтение репозиториев выключено оператором]"
+    from src import repo_tools
+
+    return repo_tools.tree(git_url)
+
+
+@tool
+def repo_file(git_url: str, path: str) -> str:
+    """READ ONE file from a PUBLIC git repo (read-only). ``git_url`` is the https
+    repo URL; ``path`` is the file path inside it (e.g. 'src/main.py'). Use
+    repo_tree first to find the path."""
+    if not settings.enable_repo_read:
+        return "[чтение репозиториев выключено оператором]"
+    from src import repo_tools
+
+    return repo_tools.read_file(git_url, path)
+
+
+@tool
 def budget_remaining() -> str:
     """Your current budget status (spent vs limit). Check before expensive work and
     self-throttle when near the limit."""
