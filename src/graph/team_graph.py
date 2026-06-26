@@ -804,6 +804,18 @@ def _content_to_text(content: Any) -> str:
     return str(content)
 
 
+def _no_step_apology(reply: str, slug: str = "") -> str:
+    """langgraph's ReAct agent returns "Sorry, need more steps…" when it hits the
+    recursion cap. With agent_max_steps set very high this is rare, but if it ever
+    happens replace the bare apology with something actionable rather than a
+    dead-end (and avoid translating that canned English line into Russian)."""
+    if (reply or "").strip().lower().startswith("sorry, need more steps"):
+        logger.warning("%s hit the tool-step cap (%s)", slug or "agent", settings.agent_max_steps)
+        return ("Задача оказалась объёмной — за один заход не закончил. Давай разобьём "
+                "её на части или скажи, что сделать в первую очередь.")
+    return reply
+
+
 def _last_user_text(messages: list[BaseMessage]) -> str:
     for msg in reversed(messages):
         if isinstance(msg, HumanMessage):
@@ -1505,7 +1517,7 @@ async def arun_specialist(role: str, text: str, project: str = "") -> str:
             result = await _tool_agent(role).ainvoke(
                 {"messages": [HumanMessage(content=text)]},
                 # Allow many tool calls so multi-file work isn't cut short.
-                config={"recursion_limit": 60},
+                config={"recursion_limit": settings.agent_max_steps},
             )
         finally:
             # Always clear this run's identity/root, even on error — otherwise the
@@ -1514,7 +1526,7 @@ async def arun_specialist(role: str, text: str, project: str = "") -> str:
             set_self_edit(False, root="")
             set_current_agent("")
             set_project_subdir("")
-        reply = _content_to_text(result["messages"][-1].content) or "..."
+        reply = _no_step_apology(_content_to_text(result["messages"][-1].content) or "...", role)
         # In self-edit mode the "project" is the whole repo, so don't dump every
         # file — the maintainer's own git diff / report is the ground truth.
         if self_edit:
@@ -1695,9 +1707,9 @@ async def agroup_reply(
             # while still bounding a runaway fan-out.
             result = await _tool_agent(slug).ainvoke(
                 {"messages": [HumanMessage(content=task)]},
-                config={"recursion_limit": settings.group_work_max_steps},
+                config={"recursion_limit": settings.agent_max_steps},
             )
-            reply = _content_to_text(result["messages"][-1].content) or "Готово."
+            reply = _no_step_apology(_content_to_text(result["messages"][-1].content) or "Готово.", slug)
         except Exception:  # noqa: BLE001
             logger.exception("group tool reply failed for %s", slug)
             reply = "Не получилось доделать — гляну ещё раз."

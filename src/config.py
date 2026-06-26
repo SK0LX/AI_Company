@@ -157,10 +157,12 @@ class Settings(BaseSettings):
     # which is hard-capped). Tune to taste; set enable_group_chat=false to mute.
     enable_group_chat: bool = True
     group_max_agent_turns: int = 2  # agent contributions per human message (cap)
-    # Tool steps a single agent may take when it actually DOES a work request in
-    # the group chat. 10 was too low for real tasks (the agent dead-ends with
-    # "needs more steps"); 40 lets it finish while still bounding a runaway.
-    group_work_max_steps: int = 40
+    # Hard cap on tool steps for ANY tool-using agent run (group work + direct
+    # specialist). langgraph's ReAct agent returns "Sorry, need more steps…" when
+    # it hits this, so a low value dead-ends real work. Set very high — effectively
+    # uncapped — because the real runaway guard is the budget hard-stop (every step
+    # is a metered LLM call), not an arbitrary step count.
+    agent_max_steps: int = 250
     # How many times a group work-request may be handed off down the team
     # (analyst → developer → tester …) before the chain stops. Bounds cost/loops.
     group_handoff_max_depth: int = 5
