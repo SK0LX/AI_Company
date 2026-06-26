@@ -2,9 +2,16 @@
 # + agents). Run it on any VPS for 24/7; "restart = update" (rebuild & up -d).
 FROM python:3.13-slim
 
-# git: needed by the maintainer's self-modify worktrees and general VCS work.
+# git: needed by the maintainer's self-modify worktrees + repo-read tool.
+# node + the Claude Code CLI: the optional bash-Claude engine (src/claude_bridge.py)
+# shells out to `claude -p`. Auth is done once at runtime via `claude login`
+# (credentials persist in the /root/.claude volume — see docker-compose).
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends git ca-certificates \
+    && apt-get install -y --no-install-recommends git ca-certificates curl \
+    && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+    && apt-get install -y --no-install-recommends nodejs \
+    && npm install -g @anthropic-ai/claude-code \
+    && npm cache clean --force \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

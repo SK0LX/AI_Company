@@ -21,6 +21,7 @@ services:
       DB_SYNCHRONOUS: "FULL"          # fsync each commit — survive a host/power crash
     volumes:
       - ./data:/app/data              # bind-mount: brings the existing agents + secret.key over
+      - ./claude_home:/root/.claude   # Claude Code CLI credentials — persists `claude login`
       - aiagents_workspace:/app/workspace
       - aiagents_wiki:/app/wiki
     ports:
