@@ -268,7 +268,9 @@
           <svg id="office" viewBox="0 0 1000 600" preserveAspectRatio="xMidYMid meet"></svg>
         </div>
         <aside class="office-side">
-          <h4 style="margin:0 0 10px; color:var(--muted); font-size:12px; text-transform:uppercase">Активность офиса</h4>
+          <h4 style="margin:0 0 8px; color:var(--muted); font-size:12px; text-transform:uppercase">Что делают сейчас</h4>
+          <div class="feed" id="stepTicker"><div class="muted">пока тихо…</div></div>
+          <h4 style="margin:14px 0 8px; color:var(--muted); font-size:12px; text-transform:uppercase">Активность офиса</h4>
           <div class="feed" id="officeFeed"></div>
         </aside>
       </div>
@@ -861,7 +863,30 @@ function connectWS() {
   ws.onopen = () => setLive(true);
   ws.onclose = () => { setLive(false); setTimeout(connectWS, 2000); };
   ws.onerror = () => ws.close();
-  ws.onmessage = () => scheduleRefresh();
+  ws.onmessage = (ev) => {
+    try {
+      const m = JSON.parse(ev.data);
+      if (m && m.event === 'step') pushStep(m);
+    } catch (e) {}
+    scheduleRefresh();
+  };
+}
+
+// live "what each agent is doing now" ticker, fed by WS step events
+let stepLog = [];
+function pushStep(m) {
+  stepLog.unshift({ actor: m.actor, text: m.text, t: Date.now() });
+  stepLog = stepLog.slice(0, 30);
+  renderSteps();
+}
+function renderSteps() {
+  const el = $('stepTicker'); if (!el) return;
+  el.innerHTML = stepLog.map(s => `
+    <div class="fi thoughts">
+      <div class="ico">💭</div>
+      <div class="body"><div class="head"><span class="who">${esc(s.actor || '—')}</span></div>
+        <div class="txt">${esc(s.text || '')}</div></div>
+    </div>`).join('') || '<div class="muted">пока тихо…</div>';
 }
 
 // ---- agent form (create/edit/delete) ---------------------------------------

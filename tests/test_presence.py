@@ -61,11 +61,29 @@ def _handoff_edge() -> None:
             s.commit()
 
 
+def _step_tracer() -> None:
+    """Each tool call an agent makes updates its live activity (the 'thought')."""
+    import asyncio
+
+    from src.graph.team_graph import StepTracer, _step_note
+
+    presence.clear_activity("developer")
+    tracer = StepTracer("developer")
+    asyncio.run(tracer.on_tool_start({"name": "repo_tree"}, "https://github.com/x/y"))
+    snap = presence.snapshot()
+    assert "developer" in snap and "изучает репозиторий" in snap["developer"]["note"]
+    presence.clear_activity("developer")
+    # label mapping + unknown-tool fallback
+    assert "пишет" in _step_note("write_file", "app.py")
+    assert "🔧 mystery" in _step_note("mystery", "")
+
+
 def main() -> None:
     registry.setup()
     _presence()
     _office_live()
     _handoff_edge()
+    _step_tracer()
     print("presence tests: OK")
 
 

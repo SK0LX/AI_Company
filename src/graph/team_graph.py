@@ -19,6 +19,7 @@ from functools import lru_cache
 from typing import Annotated, Any, Awaitable, Callable, Literal, Optional, TypedDict
 
 import aiosqlite
+from langchain_core.callbacks import AsyncCallbackHandler
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 from langchain_core.runnables import Runnable, RunnableConfig
@@ -813,6 +814,54 @@ def _content_to_text(content: Any) -> str:
     return str(content)
 
 
+# Friendly Russian labels for the live step ticker (what each tool call means).
+_TOOL_LABEL = {
+    "read_file": "📖 читает", "write_file": "✍️ пишет", "move_file": "🗂 переносит",
+    "delete_file": "🗑 удаляет", "list_files": "📂 смотрит файлы",
+    "repo_tree": "🔎 изучает репозиторий", "repo_file": "📖 читает из репо",
+    "run_shell": "⚙️ выполняет команду", "run_python": "🐍 запускает код",
+    "handoff": "↪️ передаёт коллеге", "say": "💬 пишет в чат",
+    "save_memory": "🧠 запоминает", "search_memory": "🧠 ищет в памяти",
+    "read_memory": "🧠 читает память", "list_memory": "🧠 смотрит память",
+    "board_overview": "📋 смотрит доску", "board_claim": "📋 берёт задачу",
+    "board_release": "📋 освобождает задачу", "board_set_status": "📋 меняет статус",
+    "board_delete": "📋 удаляет задачу", "board_clear": "📋 чистит доску",
+    "lock_acquire": "🔒 блокирует ресурс", "lock_release": "🔓 снимает блок",
+    "lock_who": "🔒 проверяет блок", "budget_remaining": "💰 смотрит бюджет",
+}
+
+
+def _step_note(name: str, arg: str) -> str:
+    label = _TOOL_LABEL.get(name, f"🔧 {name}")
+    arg = (arg or "").replace("\n", " ").strip()
+    # tool input often arrives as a dict-repr {'k': 'v', …} — show just the first value
+    if arg.startswith("{") and ":" in arg:
+        arg = arg.split(":", 1)[1].strip().rstrip("}")
+        arg = arg.split("', '")[0].split("','")[0]  # stop before the next key
+    arg = arg.strip("{}\"' ")[:48]
+    return f"{label} {arg}".strip()
+
+
+class StepTracer(AsyncCallbackHandler):
+    """Streams each tool call an agent makes to the live office map + event hub, so
+    you can watch what it's doing step by step (like Claude Code does)."""
+
+    def __init__(self, slug: str) -> None:
+        self.slug = slug
+
+    async def on_tool_start(self, serialized: dict, input_str: str, **kwargs: Any) -> None:
+        try:
+            from src import presence
+            from src.events import hub
+
+            name = (serialized or {}).get("name") or kwargs.get("name") or "tool"
+            note = _step_note(name, input_str if isinstance(input_str, str) else str(input_str))
+            presence.set_activity(self.slug, "working", note)
+            hub.publish({"event": "step", "actor": self.slug, "tool": name, "text": note})
+        except Exception:  # noqa: BLE001 - tracing must never break a run
+            pass
+
+
 def _no_step_apology(reply: str, slug: str = "") -> str:
     """langgraph's ReAct agent returns "Sorry, need more steps…" when it hits the
     recursion cap. With agent_max_steps set very high this is rare, but if it ever
@@ -1525,8 +1574,10 @@ async def arun_specialist(role: str, text: str, project: str = "") -> str:
         try:
             result = await _tool_agent(role).ainvoke(
                 {"messages": [HumanMessage(content=text)]},
-                # Allow many tool calls so multi-file work isn't cut short.
-                config={"recursion_limit": settings.agent_max_steps},
+                # Allow many tool calls so multi-file work isn't cut short; stream
+                # each step to the live office map so you can watch what it's doing.
+                config={"recursion_limit": settings.agent_max_steps,
+                        "callbacks": [StepTracer(role)]},
             )
         finally:
             # Always clear this run's identity/root, even on error — otherwise the
@@ -1716,7 +1767,8 @@ async def agroup_reply(
             # while still bounding a runaway fan-out.
             result = await _tool_agent(slug).ainvoke(
                 {"messages": [HumanMessage(content=task)]},
-                config={"recursion_limit": settings.agent_max_steps},
+                config={"recursion_limit": settings.agent_max_steps,
+                        "callbacks": [StepTracer(slug)]},
             )
             reply = _no_step_apology(_content_to_text(result["messages"][-1].content) or "Готово.", slug)
         except Exception:  # noqa: BLE001
