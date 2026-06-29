@@ -348,6 +348,18 @@
         <div class="field"><label>Base URL (для «другого» провайдера)</label>
           <input type="text" id="f_base_url" placeholder="https://api.groq.com/openai/v1"></div>
       </div>
+      <div class="field"><label>Движок выполнения</label>
+        <select id="f_engine" onchange="toggleClaudeHint()">
+          <option value="">(глобальный по умолчанию — TEAM_ENGINE)</option>
+          <option value="llm">LLM по API-ключу</option>
+          <option value="claude_cli">Claude Code CLI (claude -p · bash-консоль)</option>
+        </select>
+        <div class="muted" id="claudeHint" style="display:none;font-size:12px;margin-top:6px;line-height:1.4">
+          Задачи этого агента выполняет локальный <code>claude -p</code>: он сам читает и пишет
+          файлы и запускает команды в папке проекта. Нужен установленный и авторизованный CLI
+          <code>claude</code> (<code>claude login</code> или переменная <code>ANTHROPIC_API_KEY</code>).
+          Поле «Модель» выше используется как <code>--model</code> (пусто = модель по умолчанию CLI).
+        </div></div>
       <div class="field"><label>API-ключ агента (опц.; пусто = глобальный ключ провайдера)</label>
         <input type="text" id="f_api_key" placeholder=""></div>
       <div class="field"><label>Системный промпт</label>
@@ -923,6 +935,7 @@ async function openForm(slug) {
     $('f_slug').value = a.slug; $('f_name').value = a.name; $('f_role').value = a.role;
     $('f_model').value = a.model || ''; $('f_prompt').value = a.system_prompt || '';
     $('f_provider').value = a.provider || ''; $('f_base_url').value = a.base_url || '';
+    $('f_engine').value = a.engine || '';
     $('f_api_key').value = '';
     $('f_api_key').placeholder = a.has_api_key
       ? 'ключ задан — оставьте пустым, чтобы не менять'
@@ -935,13 +948,17 @@ async function openForm(slug) {
     $('f_enabled').checked = !!a.enabled;
     setPerms(a.permissions);
   } else {
-    ['f_slug','f_name','f_role','f_model','f_provider','f_base_url','f_api_key','f_prompt',
+    ['f_slug','f_name','f_role','f_model','f_provider','f_base_url','f_engine','f_api_key','f_prompt',
      'f_obligation','f_delegate','f_tg_user','f_tg_token']
       .forEach(id => $(id).value = '');
     $('f_api_key').placeholder = 'пусто = глобальный ключ провайдера';
     $('f_enabled').checked = true; setPerms({});
   }
+  toggleClaudeHint();
   $('overlay').classList.add('open');
+}
+function toggleClaudeHint() {
+  $('claudeHint').style.display = $('f_engine').value === 'claude_cli' ? 'block' : 'none';
 }
 function closeForm() { $('overlay').classList.remove('open'); }
 async function onSave() {
@@ -949,6 +966,7 @@ async function onSave() {
     slug: $('f_slug').value.trim(), name: $('f_name').value.trim(),
     role: $('f_role').value.trim(), model: $('f_model').value.trim(),
     provider: $('f_provider').value, base_url: $('f_base_url').value.trim(),
+    engine: $('f_engine').value,
     system_prompt: $('f_prompt').value, obligation: $('f_obligation').value.trim(),
     telegram_username: $('f_tg_user').value.trim(), enabled: $('f_enabled').checked,
     permissions: collectPerms(),

@@ -241,6 +241,13 @@ class Registry:
         agent = self._by_slug.get(slug)
         return (agent.base_url or "") if agent else ""
 
+    def engine_for(self, slug: str) -> str:
+        """Per-agent execution engine ("" -> the global default). See
+        config.SUPPORTED_ENGINES; resolved against the global TEAM_ENGINE in the
+        graph (see team_graph._engine_for)."""
+        agent = self._by_slug.get(slug)
+        return (agent.engine or "") if agent else ""
+
     def api_key_for(self, slug: str) -> str:
         """Decrypted per-agent LLM API key (internal use only)."""
         agent = self._by_slug.get(slug)
@@ -286,6 +293,7 @@ class Registry:
             "provider": agent.provider,
             "model": agent.model,
             "base_url": agent.base_url,
+            "engine": agent.engine or "",
             "has_api_key": bool(agent.api_key),  # never expose the key itself
             "telegram_username": agent.telegram_username,
             "has_token": bool(agent.telegram_token),  # never expose the token itself
@@ -332,6 +340,7 @@ class Registry:
                 model=data.get("model", ""),
                 api_key=encrypt(data.get("api_key", "")),
                 base_url=data.get("base_url", ""),
+                engine=data.get("engine", ""),
                 telegram_token=encrypt(data.get("telegram_token", "")),
                 telegram_username=data.get("telegram_username", ""),
                 folder_path=data.get("folder_path") or f"agents/{data['slug']}",
@@ -352,7 +361,7 @@ class Registry:
             if not agent:
                 raise KeyError(slug)
             for field in ("name", "role", "system_prompt", "provider", "model",
-                          "base_url", "telegram_username", "enabled"):
+                          "base_url", "engine", "telegram_username", "enabled"):
                 if field in data and data[field] is not None:
                     setattr(agent, field, data[field])
             # Secrets are encrypted at rest; only overwrite when a new one is sent.

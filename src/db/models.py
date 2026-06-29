@@ -32,6 +32,10 @@ class Agent(SQLModel, table=True):
     model: str = ""  # empty -> provider default
     api_key: str = ""  # encrypted; empty -> the global key for the provider
     base_url: str = ""  # for openai_compatible (any OpenAI-compatible endpoint)
+    # Execution engine: "" -> the global TEAM_ENGINE; "llm" runs on the provider
+    # above; "claude_cli" runs this agent's direct/specialist tasks through the
+    # local Claude Code CLI (`claude -p`). See config.SUPPORTED_ENGINES.
+    engine: str = ""
     telegram_token: str = ""  # encrypted in a later stage; empty for now
     telegram_username: str = ""
     folder_path: str = ""  # agents/<slug>/ — its own codebase (later stage)
