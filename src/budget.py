@@ -133,6 +133,40 @@ def record_cost(
     return cost
 
 
+def record_usd(
+    model: str, cost_usd: float, *,
+    provider: str = "claude_cli", agent: Optional[str] = None,
+    task_id: Optional[int] = None,
+) -> float:
+    """Append a CostEvent for a cost already known in USD.
+
+    The token-based :func:`record_cost` prices usage itself, but the Claude Code
+    CLI (`claude -p`) reports ``total_cost_usd`` directly rather than tokens — so
+    the Claude engine meters its spend through here. Tokens are stored as 0.
+    Best-effort: metering must never break a run."""
+    cost = float(cost_usd or 0.0)
+    agent = agent or _cost_agent.get()
+    task_id = task_id if task_id is not None else _cost_task.get()
+    try:
+        with get_session() as session:
+            session.add(CostEvent(
+                agent=agent, provider=provider, model=model,
+                input_tokens=0, output_tokens=0,
+                cost_usd=cost, task_id=task_id,
+            ))
+            session.commit()
+    except Exception:  # noqa: BLE001 - metering must never break a model call
+        logger.exception("failed to record usd cost event")
+        return cost
+    try:
+        from src import activity
+
+        activity.log(agent, "cost", model, usd=round(cost, 6), in_tok=0, out_tok=0)
+    except Exception:  # noqa: BLE001
+        pass
+    return cost
+
+
 class CostCallback(BaseCallbackHandler):
     """Meters one model's calls. Bound to a (provider, model) at build time;
     the agent/task come from context vars at call time."""

@@ -22,6 +22,14 @@ DEFAULT_MODELS = {
 # Providers selectable per agent (and globally via LLM_PROVIDER).
 SUPPORTED_PROVIDERS = ("openrouter", "anthropic", "google", "openai_compatible")
 
+# How a task is actually executed. "llm" builds a LangChain model from the
+# provider/API key (the classic path). "claude_cli" runs the task through the
+# local Claude Code CLI (`claude -p`, src/claude_bridge.py) — the bash-console
+# engine: Claude itself plans, edits files and runs shell commands inside the
+# project folder, streaming each step. Selectable globally (TEAM_ENGINE) and
+# per-agent (admin panel); a per-agent value overrides the global default.
+SUPPORTED_ENGINES = ("llm", "claude_cli")
+
 # Optional stronger default for the CEO (orchestration + structured routing).
 # Falls back to DEFAULT_MODELS[provider] when the provider isn't listed here.
 DEFAULT_CEO_MODELS = {
@@ -52,6 +60,33 @@ class Settings(BaseSettings):
 
     max_tokens: int = 4096
     temperature: float = 0.3
+
+    # Execution engine (see SUPPORTED_ENGINES above). "llm" (default) runs every
+    # agent on its configured LLM provider via API key. "claude_cli" runs the
+    # whole team request through the local Claude Code CLI (`claude -p`) instead:
+    # Claude plans, delegates to your team personas (passed via --agents), reads/
+    # writes files and runs shell commands in the project folder itself, streaming
+    # each step into the same live ticker. Requires the `claude` CLI installed and
+    # authenticated (run `claude login`, or set ANTHROPIC_API_KEY). A per-agent
+    # `engine` chosen in the admin panel overrides this for that agent's direct/
+    # specialist runs. NOTE: the Claude engine bypasses the LangGraph CEO routing
+    # (Claude is the orchestrator) — plan-approval/clarify gating does not apply.
+    team_engine: str = "llm"  # "llm" | "claude_cli"
+    # Optional model passed to `claude -p --model` (e.g. "claude-opus-4-8" or a
+    # short alias like "opus"/"sonnet"). Empty = the CLI's own default. A
+    # per-agent model set in the panel wins over this for that agent.
+    claude_model: str = ""
+    # `claude` prefers ANTHROPIC_API_KEY over a logged-in subscription when the
+    # env var is present. Set true to DROP the key from the CLI subprocess so it
+    # uses the cheaper `claude login` subscription credentials instead.
+    claude_use_subscription: bool = False
+    # Tool-approval mode for `claude -p`. "acceptEdits" auto-approves file edits;
+    # "default"/"plan"/"bypassPermissions" change how much it asks/does (see the
+    # Claude Code docs). The Claude engine runs unattended, so edits are auto-
+    # accepted by default — only enable it in a trusted, sandboxed workspace.
+    claude_permission_mode: str = "acceptEdits"
+    # Hard cap (seconds) on a single `claude -p` task before it's killed.
+    claude_timeout: int = 1200
 
     # Where the SQLite conversation memory lives (persists across restarts).
     db_path: str = "data/memory.sqlite"
@@ -243,6 +278,12 @@ class Settings(BaseSettings):
             "anthropic": self.anthropic_api_key,
             "openrouter": self.openrouter_api_key,
         }.get(self.llm_provider, "")
+
+    @property
+    def team_engine_resolved(self) -> str:
+        """The global default engine, normalized to a supported value."""
+        engine = (self.team_engine or "llm").strip().lower()
+        return engine if engine in SUPPORTED_ENGINES else "llm"
 
 
 settings = Settings()  # type: ignore[call-arg]

@@ -15,6 +15,7 @@ services:
       DB_PATH: /app/data/memory.sqlite
     volumes:
       - aiagents_data:/app/data        # SQLite DB, secret.key, quota.json — persists
+      - ./claude_home:/root/.claude    # Claude Code CLI creds — persists `claude login` (TEAM_ENGINE=claude_cli)
       - aiagents_workspace:/app/workspace
       - aiagents_wiki:/app/wiki
     ports:

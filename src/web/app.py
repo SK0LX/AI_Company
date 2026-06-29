@@ -222,6 +222,7 @@ class AgentIn(BaseModel):
     model: Optional[str] = None
     api_key: Optional[str] = None
     base_url: Optional[str] = None
+    engine: Optional[str] = None  # "" -> global TEAM_ENGINE; "llm" | "claude_cli"
     telegram_token: Optional[str] = None
     telegram_username: Optional[str] = None
     enabled: Optional[bool] = None

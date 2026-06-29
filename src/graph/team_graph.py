@@ -41,7 +41,7 @@ from src.agents.tools import (
     wiki_search_notes,
     wiki_write_note,
 )
-from src.config import settings
+from src.config import SUPPORTED_ENGINES, settings
 
 logger = logging.getLogger(__name__)
 
@@ -510,6 +510,73 @@ def _specialist_model(slug: Optional[str] = None) -> BaseChatModel:
     """Model for a specialist. Honors the agent's per-agent provider/model/key/
     base_url from the registry; falls back to the global default."""
     return _model_cached(*_resolve_spec(slug))
+
+
+# --- engine selection (LLM vs the Claude Code CLI bash bridge) ---------------
+
+def _engine_for(slug: Optional[str]) -> str:
+    """Effective execution engine for an agent: its OWN choice if set, otherwise
+    the global TEAM_ENGINE. Always one of ``config.SUPPORTED_ENGINES``. ``slug``
+    may be ``"ceo"`` to resolve the team-level engine for ``arun_team``."""
+    eng = ((registry.engine_for(slug) if slug else "") or "").strip().lower()
+    if not eng:
+        eng = settings.team_engine_resolved
+    return eng if eng in SUPPORTED_ENGINES else "llm"
+
+
+def _project_path(project: str) -> str:
+    """Absolute project folder used as the Claude engine's working directory:
+    ``<workspace>/<slug>`` (mirrors ``tools._workspace_root`` for the normal,
+    non-self-edit case). Created if missing so ``claude -p`` has a real cwd."""
+    base = os.path.abspath(os.path.expanduser(settings.workspace_dir))
+    sub = sanitize_project(project) if project else ""
+    path = os.path.join(base, sub) if sub else base
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
+def _publish_step(slug: str, note: str, *, tool: str = "claude") -> None:
+    """Mirror a Claude-engine step onto the live office map + event hub, exactly
+    like ``StepTracer`` does for LLM tool calls, so the dashboard/Telegram tickers
+    show progress regardless of which engine ran. Best-effort."""
+    if not note:
+        return
+    try:
+        from src import presence
+        from src.events import hub
+
+        presence.set_activity(slug, "working", note)
+        hub.publish({"event": "step", "actor": slug, "tool": tool, "text": note})
+    except Exception:  # noqa: BLE001 - tracing must never break a run
+        pass
+
+
+def _claude_progress_line(kind: str, text: str) -> str:
+    """One short live-ticker line from a ``run_claude`` step event. The bridge
+    already prefixes tool/delegate steps with an icon; we only decorate 'think'."""
+    text = (text or "").replace("\n", " ").strip()
+    if not text:
+        return ""
+    if kind == "think":
+        text = f"💭 {text}"
+    return text[:200]
+
+
+def _claude_team_agents() -> Optional[dict]:
+    """Build the ``claude -p --agents`` roster from the registry's ENABLED
+    specialists, so the Claude engine delegates to the SAME team personas you
+    configured in the panel (not the static stub in claude_bridge). Returns None
+    when there are no specialists, in which case Claude just runs solo."""
+    agents: dict[str, dict] = {}
+    for slug in registry.specialist_slugs(enabled_only=True):
+        prompt = (registry.prompt(slug) or "").strip()
+        if not prompt:
+            continue
+        desc = (registry.obligation(slug) or registry.label(slug) or slug).strip()
+        # Claude subagent names are restricted to letters/digits/hyphens.
+        name = slug.replace("_", "-")
+        agents[name] = {"description": desc, "prompt": prompt}
+    return agents or None
 
 
 # Roles that work with real files and therefore run as tool-enabled agents.
@@ -1419,6 +1486,131 @@ async def aquick_reply(text: str, thread_id: str) -> str:
         return "Принял ваше сообщение — учту в текущей задаче."
 
 
+# --- Claude Code CLI engine (the bash-console engine) -----------------------
+
+async def _run_specialist_claude(role: str, text: str, project: str) -> str:
+    """Run ONE specialist's task through the Claude Code CLI (`claude -p`) instead
+    of an LLM, when that agent's engine is ``claude_cli``. Claude reads/writes the
+    real files and runs commands itself inside the project folder, streaming each
+    step to the same live office map. Returns the specialist's reply text, with the
+    on-disk file list appended (the CEO's ground-truth check, same as the LLM path)."""
+    from src import claude_bridge
+
+    label = registry.label(role)
+    cwd = _project_path(project)
+    model = (registry.model_for(role) or settings.claude_model or "").strip() or None
+
+    async def on_step(kind: str, step_text: str) -> None:
+        if kind == "result":
+            return  # the final answer is this function's return value
+        _publish_step(role, _claude_progress_line(kind, step_text) or f"{label} работает…")
+
+    _publish_step(role, f"{label}: запускаю Claude Code (`claude -p`)…")
+    # Point the in-process file listing at the same folder Claude works in, so the
+    # "[Files actually on disk …]" report below is accurate.
+    set_project_subdir(project)
+    try:
+        res = await claude_bridge.run_claude(
+            prompt=text,
+            cwd=cwd,
+            model=model,
+            permission_mode=settings.claude_permission_mode,
+            use_subscription=settings.claude_use_subscription,
+            on_step=on_step,
+            timeout=float(settings.claude_timeout),
+        )
+        if res.get("cost_usd"):
+            try:
+                budget.record_usd(model or "claude", res["cost_usd"], agent=role)
+            except Exception:  # noqa: BLE001
+                logger.exception("failed to record claude cost")
+        if not res.get("ok"):
+            err = (res.get("error") or "unknown error").strip()
+            return (f"[Claude engine error] {label} не смог выполнить задачу через "
+                    f"`claude -p`: {err}")
+        reply = res.get("answer") or "..."
+        # Ground the report in reality, like arun_specialist's tool path does.
+        if _uses_tools(role):
+            try:
+                saved = current_project_files()
+            except Exception:  # noqa: BLE001
+                saved = []
+            listing = "\n".join(saved) if saved else "(no files were actually saved!)"
+            reply += f"\n\n[Files actually on disk in the project folder now]\n{listing}"
+        return reply
+    finally:
+        set_project_subdir("")
+
+
+async def _run_team_claude(
+    text: str,
+    thread_id: str,
+    on_event: Optional[Callable[[str, str], Awaitable[None]]],
+) -> tuple[str, Optional[str], bool]:
+    """Run a whole team request through the Claude Code CLI (`claude -p`) as ONE
+    agentic session: Claude plans, delegates to your team personas (passed via
+    ``--agents``), edits files and runs commands in the project folder, streaming
+    each step into the same live ticker. Returns ``(answer, None, did_work)`` to
+    match :func:`arun_team`. This path intentionally bypasses the LangGraph CEO
+    (Claude is the orchestrator), so plan-approval/clarify gating does not apply."""
+    from src import claude_bridge
+
+    project = sanitize_project(f"team-{thread_id}" if thread_id else "team")
+    cwd = _project_path(project)
+    model = (registry.model_for("ceo") or settings.claude_model or "").strip() or None
+    agents = _claude_team_agents()
+
+    prompt = (
+        f"{registry.ceo_prompt().strip()}\n\n{registry.roster_block()}\n\n"
+        "You ARE this AI company and you run the WHOLE request end to end in the "
+        "current project folder. Plan briefly, then DO the work: delegate parts to "
+        "your teammates (the subagents listed above) by name, write the real files, "
+        "and run the commands needed to build and verify. Finish with a concise "
+        "summary in the USER'S LANGUAGE (Russian if the request is in Russian) that "
+        "lists the files you produced.\n\n"
+        f"User request:\n{text}"
+    )
+
+    async def on_step(kind: str, step_text: str) -> None:
+        if kind == "result":
+            return  # final answer is returned below, not streamed as its own msg
+        line = _claude_progress_line(kind, step_text)
+        if not line:
+            return
+        _set_status(thread_id, line[:120])
+        if on_event is not None:
+            await on_event("delegate", line)
+
+    res = await claude_bridge.run_claude(
+        prompt=prompt,
+        cwd=cwd,
+        agents=agents,
+        model=model,
+        permission_mode=settings.claude_permission_mode,
+        use_subscription=settings.claude_use_subscription,
+        on_step=on_step,
+        timeout=float(settings.claude_timeout),
+    )
+    if res.get("cost_usd"):
+        try:
+            budget.record_usd(model or "claude", res["cost_usd"], agent="ceo")
+        except Exception:  # noqa: BLE001
+            logger.exception("failed to record claude cost")
+    if not res.get("ok"):
+        err = (res.get("error") or "unknown error").strip()
+        return (
+            f"⚠️ Движок Claude Code не справился с задачей: {err}\n\nПроверьте, что "
+            "CLI `claude` установлен и авторизован (`claude login` или переменная "
+            "ANTHROPIC_API_KEY), и что включён движок claude_cli.",
+            None,
+            False,
+        )
+    answer = res.get("answer") or "..."
+    if settings.translate_chatter:
+        answer = await aensure_russian(answer)
+    return answer, None, True
+
+
 # --- public API -------------------------------------------------------------
 
 async def arun_team(
@@ -1441,8 +1633,6 @@ async def arun_team(
     is True when at least one specialist ran (so the caller can announce
     completion only for real work, not small talk).
     """
-    app = await _get_team_app()
-
     # Company-wide budget hard-stop: refuse to start a run when over budget.
     if budget.blocked(None):
         g = budget.gate(None)
@@ -1455,6 +1645,18 @@ async def arun_team(
                "панели или дождитесь сброса окна.")
         return msg, None, False
 
+    # Engine switch: when the team runs on the Claude Code CLI, hand the whole
+    # request to `claude -p` (Claude orchestrates + delegates) instead of the
+    # LangGraph CEO — no need to build the graph at all. Still registered as a
+    # live run so /reset + mid-run chat work.
+    if _engine_for("ceo") == "claude_cli":
+        _run_start(thread_id, text)
+        try:
+            return await _run_team_claude(text, thread_id, on_event)
+        finally:
+            _run_end(thread_id)
+
+    app = await _get_team_app()
     inputs = {
         "messages": [HumanMessage(content=text)],
         "findings": [],  # reset scratchpad for each new request
@@ -1543,6 +1745,13 @@ async def arun_specialist(role: str, text: str, project: str = "") -> str:
     folder so every specialist on the same request writes into ONE directory.
     """
     budget.set_cost_agent(role)  # attribute this specialist's model spend
+    # Engine switch: run this specialist through the Claude Code CLI when chosen.
+    # Self-editing (the maintainer) stays on the battle-tested LLM + git-worktree
+    # path below — its governance/approval flow has no Claude equivalent here.
+    if _engine_for(role) == "claude_cli" and not (
+        settings.enable_self_modify and _is_self_editor(role)
+    ):
+        return await _run_specialist_claude(role, text, project)
     if _uses_tools(role):
         self_edit = settings.enable_self_modify and _is_self_editor(role)
         worktree: Optional[dict] = None
