@@ -1707,6 +1707,7 @@ async def arun_group_plan(task: str) -> list[tuple[str, str]]:
         model=(settings.claude_model or "").strip() or None,
         permission_mode="default",
         use_subscription=settings.claude_use_subscription,
+        no_tools=True,  # pure reasoning — don't let the model attempt (slow) tools
         timeout=float(settings.claude_timeout),
     )
     if res.get("cost_usd"):
@@ -1781,6 +1782,7 @@ async def arun_group_route(task: str) -> tuple[str, object]:
         model=(settings.claude_fast_model or "").strip() or None,  # snappy: hop and reply
         permission_mode="default",
         use_subscription=settings.claude_use_subscription,
+        no_tools=True,  # pure reasoning — don't let the model attempt (slow) tools
         timeout=float(settings.claude_timeout),
     )
     if res.get("cost_usd"):
@@ -1838,6 +1840,7 @@ async def arun_next_hop(
         model=(settings.claude_fast_model or "").strip() or None,
         permission_mode="default",
         use_subscription=settings.claude_use_subscription,
+        no_tools=True,  # pure reasoning — don't let the model attempt (slow) tools
         timeout=float(settings.claude_timeout),
     )
     if res.get("cost_usd"):
@@ -1873,6 +1876,7 @@ async def arun_group_summary(task: str, results: list[tuple[str, str]]) -> str:
         model=(settings.claude_model or "").strip() or None,
         permission_mode="default",
         use_subscription=settings.claude_use_subscription,
+        no_tools=True,  # pure reasoning — don't let the model attempt (slow) tools
         timeout=float(settings.claude_timeout),
     )
     if res.get("cost_usd"):

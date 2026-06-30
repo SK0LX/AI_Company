@@ -70,6 +70,7 @@ async def run_claude(
     use_subscription: bool = False,
     on_step: Optional[StepCb] = None,
     can_use_tool: Optional[Callable] = None,
+    no_tools: bool = False,
     timeout: float = 1200.0,
 ) -> dict:
     """Run one task via `claude -p` (stream-json) and return
@@ -82,6 +83,10 @@ async def run_claude(
     ``can_use_tool``: a Claude-Agent-SDK permission callback (see src/claude_perms).
     When given, the task runs through the in-process Agent SDK instead of the raw
     CLI so every tool use passes the 4-category permission gate (auto / web-ask).
+
+    ``no_tools``: disable ALL tools (--disallowedTools). For pure text decisions —
+    the lead router, relay hop, plan, summary — so the model can't waste seconds
+    attempting (and getting denied) file/web tools; it just reasons and replies fast.
     """
     if can_use_tool is not None:
         return await run_claude_sdk(
@@ -97,6 +102,11 @@ async def run_claude(
         cmd += ["--resume", resume]
     if model:
         cmd += ["--model", model]
+    if no_tools:
+        # append LAST: --disallowedTools is variadic and would swallow later flags
+        cmd += ["--disallowedTools", "Bash", "Edit", "Write", "Read", "Glob",
+                "Grep", "WebFetch", "WebSearch", "Task", "NotebookEdit",
+                "MultiEdit", "LS", "TodoWrite"]
 
     env = {k: v for k, v in os.environ.items()
            if not (use_subscription and k == "ANTHROPIC_API_KEY")}
