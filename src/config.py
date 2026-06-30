@@ -76,6 +76,14 @@ class Settings(BaseSettings):
     # short alias like "opus"/"sonnet"). Empty = the CLI's own default. A
     # per-agent model set in the panel wins over this for that agent.
     claude_model: str = ""
+    # FAST model for the lead router, the relay hand-off decision and casual chat
+    # replies — the cheap, snappy calls that run on every message. The heavy work
+    # (specialists actually building/analysing) keeps using claude_model. "haiku"
+    # is a CLI alias; on the subscription this still costs $0.
+    claude_fast_model: str = "haiku"
+    # Relay (эстафета) safety cap: max number of agent hops in one chain before it
+    # is forced to stop (lead → agent → agent …). Prevents runaway/looping chains.
+    claude_relay_max_hops: int = 6
     # `claude` prefers ANTHROPIC_API_KEY over a logged-in subscription when the
     # env var is present. Set true to DROP the key from the CLI subprocess so it
     # uses the cheaper `claude login` subscription credentials instead.

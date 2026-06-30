@@ -310,12 +310,15 @@ class TelegramManager:
         session (subscription) and reports via its OWN Telegram bot. Multiple real
         agents do the work — the original AI-office vision, with zero API money."""
         from src import presence
-        from src.graph.team_graph import arun_group_route, arun_group_summary, arun_specialist
+        from src.config import settings
+        from src.graph.team_graph import (
+            arun_group_route, arun_group_summary, arun_next_hop, arun_specialist,
+        )
 
         self._approval_chat_id = chat.id  # permission buttons go to THIS chat
         project = f"group-{chat.id}"
 
-        # The lead router decides: reply itself (chit-chat) or delegate (work).
+        # The lead router decides (fast model): reply itself (chit-chat) or delegate.
         try:
             kind, payload = await arun_group_route(text)
         except Exception:  # noqa: BLE001
@@ -325,47 +328,58 @@ class TelegramManager:
         if kind == "chat":
             reply = (payload or "").strip() if isinstance(payload, str) else ""
             if reply:
-                await self.post_to_chat(chat.id, reply)  # the lead's own reply
+                await self.post_to_chat(chat.id, reply)  # the lead's own quick reply
             return
 
         plan = list(payload) if isinstance(payload, list) else []
         if not plan:
-            # The lead flagged work but couldn't split it — hand the WHOLE task to the
-            # best-fit NAMED agent so a real teammate (own bot) does it, never a lone
-            # claude session.
             default_slug = self._default_group_agent()
             if not default_slug:
                 return
             plan = [(default_slug, text)]
 
-        await self.post_to_chat(chat.id, "🧠 Тех-лид раздаёт задачу команде…")
-        await self.post_to_chat(
-            chat.id,
-            "📋 План:\n" + "\n".join(f"• {registry.label(s)} — {t[:90]}" for s, t in plan),
-        )
-        results: list[tuple[str, str]] = []
-        for slug, subtask in plan:
-            # Visible hand-off: the agent itself announces it took the subtask, via
-            # its OWN bot — so you SEE "разраб взялся за …" in the chat, not just the
-            # office ticker.
+        # RELAY (эстафета): the lead picks the STARTING agent; after each agent
+        # finishes it decides itself whether to hand the baton to a teammate. The
+        # chain continues until someone says "done" or the hop cap is hit.
+        await self.post_to_chat(chat.id, f"🧠 Тех-лид запускает эстафету → {registry.label(plan[0][0])}")
+        results: list[tuple[str, str, str]] = []
+        current: tuple[str, str] | None = plan[0]
+        hops = 0
+        max_hops = max(1, int(settings.claude_relay_max_hops))
+        while current and hops < max_hops:
+            slug, subtask = current
             await self.post_as(slug, chat.id, f"🛠 Взялся за: {subtask[:300]}")
             presence.set_activity(slug, "working", _work_note(slug))
             try:
                 result = await arun_specialist(slug, subtask, project)
             except Exception:  # noqa: BLE001
-                logger.exception("group team agent %s failed", slug)
+                logger.exception("relay agent %s failed", slug)
                 result = "не получилось выполнить подзадачу — гляну ещё раз."
             presence.clear_activity(slug)
             out = (result or "").strip()[:3500] or "готово."
-            results.append((slug, out))
+            results.append((slug, subtask, out))
             if slug in self._agent_apps:
                 await self.post_as(slug, chat.id, out)  # the agent's OWN bot
             else:
                 await self.post_to_chat(chat.id, f"{registry.label(slug)}: {out}")
+            hops += 1
+            # The agent itself decides the next hop (fast model).
+            try:
+                nxt = await arun_next_hop(slug, text, results) if hops < max_hops else None
+            except Exception:  # noqa: BLE001
+                logger.exception("relay next-hop failed")
+                nxt = None
+            if nxt:
+                await self.post_to_chat(
+                    chat.id,
+                    f"↪️ {registry.label(slug)} передаёт эстафету → "
+                    f"{registry.label(nxt[0])}: {nxt[1][:120]}",
+                )
+            current = nxt
 
-        # Lead wrap-up: the tech-lead summarizes what the team produced.
+        # Lead wrap-up: the tech-lead summarizes the whole chain.
         try:
-            summary = await arun_group_summary(text, results)
+            summary = await arun_group_summary(text, [(s, r) for s, _, r in results])
         except Exception:  # noqa: BLE001
             logger.exception("group summary failed")
             summary = ""

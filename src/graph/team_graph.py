@@ -1778,14 +1778,14 @@ async def arun_group_route(task: str) -> tuple[str, object]:
     )
     res = await claude_bridge.run_claude(
         prompt=prompt, cwd=_project_path("route"), agents=None,
-        model=(settings.claude_model or "").strip() or None,
+        model=(settings.claude_fast_model or "").strip() or None,  # snappy: hop and reply
         permission_mode="default",
         use_subscription=settings.claude_use_subscription,
         timeout=float(settings.claude_timeout),
     )
     if res.get("cost_usd"):
         try:
-            budget.record_usd(settings.claude_model or "claude", res["cost_usd"], agent="ceo")
+            budget.record_usd(settings.claude_fast_model or "claude", res["cost_usd"], agent="ceo")
         except Exception:  # noqa: BLE001
             logger.exception("failed to record claude cost")
     answer = (res.get("answer") or "").strip()
@@ -1802,6 +1802,55 @@ async def arun_group_route(task: str) -> tuple[str, object]:
     # Neither a CHAT line nor a parseable plan: treat a short answer as a chat reply,
     # otherwise let the caller hand it to a default agent.
     return ("chat", answer if 0 < len(answer) < 600 else "")
+
+
+async def arun_next_hop(
+    last_slug: str, task: str, history: list[tuple[str, str, str]],
+) -> tuple[str, str] | None:
+    """Relay (эстафета) step: role-played as the teammate who JUST finished, decide
+    whether the work is complete or it should be handed to ANOTHER teammate. ONE fast
+    `claude -p` call (the cheap model). Returns the next ``(slug, subtask)`` or
+    ``None`` when done — so the agents themselves drive the chain. Never hands off to
+    the same agent twice in a row."""
+    from src import claude_bridge
+
+    slugs = [s for s in registry.specialist_slugs(enabled_only=True) if s != last_slug]
+    if not slugs:
+        return None
+    roster = "\n".join(
+        f"- {s}: {registry.label(s)} — {(registry.obligation(s) or '').strip()[:80]}"
+        for s in slugs
+    )
+    done = "\n".join(f"- {registry.label(s)}: {(r or '').strip()[:200]}" for s, _, r in history)
+    label = registry.label(last_slug)
+    prompt = (
+        f"Ты — {label}. Исходная задача команды:\n{task}\n\n"
+        f"Что уже сделано (по шагам):\n{done}\n\n"
+        "Реши как ответственный за свой этап: работа ПОЛНОСТЬЮ завершена, или нужно "
+        "передать эстафету коллеге для следующего шага? Ответь СТРОГО одной строкой:\n"
+        "• «ГОТОВО» — если делать больше нечего;\n"
+        "• «slug: что именно сделать дальше» — кому передать (slug ТОЛЬКО из списка ниже, "
+        "не дублируй уже сделанное).\n"
+        f"Коллеги:\n{roster}"
+    )
+    res = await claude_bridge.run_claude(
+        prompt=prompt, cwd=_project_path("relay"), agents=None,
+        model=(settings.claude_fast_model or "").strip() or None,
+        permission_mode="default",
+        use_subscription=settings.claude_use_subscription,
+        timeout=float(settings.claude_timeout),
+    )
+    if res.get("cost_usd"):
+        try:
+            budget.record_usd(settings.claude_fast_model or "claude", res["cost_usd"], agent=last_slug)
+        except Exception:  # noqa: BLE001
+            logger.exception("failed to record claude cost")
+    answer = (res.get("answer") or "").strip()
+    upper = answer.upper()
+    if "ГОТОВО" in upper or "DONE" in upper or "ЗАВЕРШ" in upper:
+        return None
+    plan = [(s, t) for s, t in _parse_plan_lines(answer, slugs) if s != last_slug]
+    return plan[0] if plan else None
 
 
 async def arun_group_summary(task: str, results: list[tuple[str, str]]) -> str:
