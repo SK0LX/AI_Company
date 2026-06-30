@@ -309,14 +309,16 @@ class TelegramManager:
         subtasks for NAMED agents; each agent runs its subtask as its OWN claude
         session (subscription) and reports via its OWN Telegram bot. Multiple real
         agents do the work — the original AI-office vision, with zero API money."""
-        from src import presence
+        from src import presence, team_memory
         from src.config import settings
         from src.graph.team_graph import (
-            arun_group_route, arun_group_summary, arun_next_hop, arun_specialist,
+            _project_path, archive_project_to_wiki, arun_group_route,
+            arun_group_summary, arun_next_hop, arun_specialist,
         )
 
         self._approval_chat_id = chat.id  # permission buttons go to THIS chat
         project = f"group-{chat.id}"
+        project_dir = _project_path(project)
 
         # The lead router decides (fast model): reply itself (chit-chat) or delegate.
         try:
@@ -338,6 +340,10 @@ class TelegramManager:
                 return
             plan = [(default_slug, text)]
 
+        # Seed the shared team board for this task (the common memory every agent
+        # reads before working — complements their personal resumed sessions).
+        team_memory.seed(project_dir, text)
+
         # RELAY (эстафета): the lead picks the STARTING agent; after each agent
         # finishes it decides itself whether to hand the baton to a teammate. The
         # chain continues until someone says "done" or the hop cap is hit.
@@ -358,6 +364,7 @@ class TelegramManager:
             presence.clear_activity(slug)
             out = (result or "").strip()[:3500] or "готово."
             results.append((slug, subtask, out))
+            team_memory.append(project_dir, registry.label(slug), out)  # shared board
             if slug in self._agent_apps:
                 await self.post_as(slug, chat.id, out)  # the agent's OWN bot
             else:
@@ -385,6 +392,13 @@ class TelegramManager:
             summary = ""
         if summary:
             await self.post_to_chat(chat.id, "✅ Итог тех-лида:\n" + summary[:3500])
+
+        # Archive the shared board into the global wiki — long-term memory across
+        # projects (durable, no model cost).
+        try:
+            archive_project_to_wiki(project)
+        except Exception:  # noqa: BLE001
+            logger.exception("wiki archive failed")
 
     async def _group_post(self, chat, slug: str, reply: str) -> None:
         """Send one agent's group message via its own bot (with dedup + echo guard)."""

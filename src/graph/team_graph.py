@@ -1093,6 +1093,22 @@ async def _update_wiki_card(
         return
 
 
+def archive_project_to_wiki(project: str) -> None:
+    """Persist the project's shared board (TEAM_MEMORY.md) into the global team wiki
+    as its long-term note — durable memory across projects. Pure file copy, no model
+    call ($0), used by the Claude-engine relay when a task finishes."""
+    if not settings.enable_wiki or not project:
+        return
+    try:
+        from src import team_memory
+
+        content = team_memory.read(_project_path(project))
+        if content.strip():
+            wiki_write_note(f"projects/{sanitize_project(project)}", content)
+    except Exception:  # noqa: BLE001 - wiki write must never break a run
+        logger.exception("failed to archive project to wiki")
+
+
 # --- graph nodes ------------------------------------------------------------
 
 async def _ceo_node(state: TeamState, config: Optional[RunnableConfig] = None) -> dict:
@@ -1497,26 +1513,39 @@ async def _run_specialist_claude(role: str, text: str, project: str) -> str:
     real files and runs commands itself inside the project folder, streaming each
     step to the same live office map. Returns the specialist's reply text, with the
     on-disk file list appended (the CEO's ground-truth check, same as the LLM path)."""
-    from src import claude_bridge
+    from src import agent_sessions, claude_bridge
     from src.claude_perms import make_can_use_tool
 
     label = registry.label(role)
     cwd = _project_path(project)
     model = (registry.model_for(role) or settings.claude_model or "").strip() or None
+    # Personal persistent session: resume this agent's own Claude conversation for
+    # this project, so it keeps its context (what it read/did) instead of re-reading.
+    resume = agent_sessions.get(role, project)
+    # Shared memory: tell the agent to read the common board before working (it may
+    # carry what teammates changed since this agent's last turn).
+    prompt = (
+        "Перед началом прочитай файл ./TEAM_MEMORY.md в текущей папке — это общая память "
+        "команды по задаче (план, что уже сделали коллеги, какие файлы изменены). "
+        "Учитывай её и не повторяй уже сделанное.\n\n"
+        f"Твоя подзадача:\n{text}"
+    )
 
     async def on_step(kind: str, step_text: str) -> None:
         if kind == "result":
             return  # the final answer is this function's return value
         _publish_step(role, _claude_progress_line(kind, step_text) or f"{label} работает…")
 
-    _publish_step(role, f"{label}: запускаю Claude Code (`claude -p`)…")
+    note = "продолжаю свою сессию…" if resume else "запускаю Claude Code (`claude -p`)…"
+    _publish_step(role, f"{label}: {note}")
     # Point the in-process file listing at the same folder Claude works in, so the
     # "[Files actually on disk …]" report below is accurate.
     set_project_subdir(project)
     try:
         res = await claude_bridge.run_claude(
-            prompt=text,
+            prompt=prompt,
             cwd=cwd,
+            resume=resume,
             model=model,
             permission_mode=settings.claude_permission_mode,
             use_subscription=settings.claude_use_subscription,
@@ -1524,6 +1553,12 @@ async def _run_specialist_claude(role: str, text: str, project: str) -> str:
             can_use_tool=make_can_use_tool(role),  # 4-category permission gate
             timeout=float(settings.claude_timeout),
         )
+        # Persist the session for next time; drop it if a resume attempt failed so
+        # the agent recovers with a fresh session.
+        if res.get("ok"):
+            agent_sessions.remember(role, project, res.get("session_id"))
+        elif resume:
+            agent_sessions.forget(role, project)
         if res.get("cost_usd"):
             try:
                 budget.record_usd(model or "claude", res["cost_usd"], agent=role)
