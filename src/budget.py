@@ -143,7 +143,13 @@ def record_usd(
     The token-based :func:`record_cost` prices usage itself, but the Claude Code
     CLI (`claude -p`) reports ``total_cost_usd`` directly rather than tokens — so
     the Claude engine meters its spend through here. Tokens are stored as 0.
-    Best-effort: metering must never break a run."""
+    Best-effort: metering must never break a run.
+
+    IMPORTANT: the Claude engine runs under the flat SUBSCRIPTION — there is NO
+    per-token money to bill. So the event is recorded for the activity/call count,
+    but its ``cost_usd`` is stored as 0: the "Стоимость" ledger must reflect REAL
+    API money only, never the notional subscription cost (which would otherwise
+    look like spend that keeps growing)."""
     cost = float(cost_usd or 0.0)
     agent = agent or _cost_agent.get()
     task_id = task_id if task_id is not None else _cost_task.get()
@@ -152,7 +158,7 @@ def record_usd(
             session.add(CostEvent(
                 agent=agent, provider=provider, model=model,
                 input_tokens=0, output_tokens=0,
-                cost_usd=cost, task_id=task_id,
+                cost_usd=0.0, task_id=task_id,  # subscription = no real $ to bill
             ))
             session.commit()
     except Exception:  # noqa: BLE001 - metering must never break a model call
