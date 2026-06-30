@@ -1611,6 +1611,67 @@ async def _run_team_claude(
     return answer, None, True
 
 
+async def arun_group_claude(
+    transcript: str,
+    thread_id: str,
+    on_event: Optional[Callable[[str, str], Awaitable[None]]] = None,
+) -> str:
+    """Handle a GROUP-chat message via the Claude Code CLI in ONE session (under the
+    subscription when claude_use_subscription is set), so the whole group response —
+    casual or real work — costs no per-token API money. For chatter it replies
+    briefly as one fitting teammate (or returns "" to stay silent); for a real task
+    it delegates to the persona subagents, writes files and verifies. Returns the
+    text to post (empty string = stay silent)."""
+    from src import claude_bridge
+
+    project = sanitize_project(f"group-{thread_id}")
+    cwd = _project_path(project)
+    model = (settings.claude_model or "").strip() or None
+    agents = _claude_team_agents()
+    prompt = (
+        f"{registry.roster_block()}\n\n"
+        "Ты — эта команда в общем Telegram-чате с реальными людьми. Посмотри на "
+        "ПОСЛЕДНЕЕ сообщение в переписке ниже.\n"
+        "— Если это болтовня, приветствие или короткий вопрос: ответь КРАТКО "
+        "(1–2 предложения) от лица ОДНОГО самого подходящего коллеги, на языке "
+        "собеседника. Если по делу добавить нечего — верни РОВНО слово SILENT.\n"
+        "— Если это НАСТОЯЩАЯ рабочая задача: выполни её — делегируй части команде "
+        "(субагентам по именам), напиши реальные файлы в текущей папке проекта, "
+        "проверь, и в конце дай короткое резюме со списком файлов, на языке "
+        "собеседника.\n\n"
+        f"Переписка (последняя строка — новое сообщение):\n{transcript}"
+    )
+
+    async def on_step(kind: str, step_text: str) -> None:
+        if kind == "result":
+            return
+        line = _claude_progress_line(kind, step_text)
+        if line and on_event is not None:
+            await on_event("delegate", line)
+
+    res = await claude_bridge.run_claude(
+        prompt=prompt, cwd=cwd, agents=agents, model=model,
+        permission_mode=settings.claude_permission_mode,
+        use_subscription=settings.claude_use_subscription,
+        on_step=on_step, timeout=float(settings.claude_timeout),
+    )
+    if res.get("cost_usd"):
+        try:
+            budget.record_usd(model or "claude", res["cost_usd"], agent="ceo")
+        except Exception:  # noqa: BLE001
+            logger.exception("failed to record claude cost")
+    if not res.get("ok"):
+        logger.warning("group claude engine failed: %s", (res.get("error") or "")[:200])
+        return ""
+    answer = (res.get("answer") or "").strip()
+    if not answer or answer.strip(" .!\"'").upper() == "SILENT":
+        return ""
+    # No aensure_russian here on purpose: the prompt already tells Claude to answer
+    # in the user's language, and a translate call would spend extra API money — the
+    # whole point of this path is ZERO per-token API cost on group chat.
+    return answer
+
+
 # --- public API -------------------------------------------------------------
 
 async def arun_team(

@@ -193,6 +193,15 @@ class TelegramManager:
         roster = [(s, registry.label(s), registry.get(s).role) for s in present]
         transcript = gc.transcript_text(chat.id)
 
+        # Claude-CLI engine: route the WHOLE group message (chatter OR work) through
+        # ONE `claude -p` session under the subscription, instead of the native
+        # per-agent LLM decides. This keeps the team answering via the console and
+        # spends ZERO per-token API money on group chatter.
+        from src.config import settings as _eng
+        if _eng.team_engine == "claude_cli":
+            await self._run_group_claude(chat, transcript)
+            return
+
         # A work request -> ONE agent actually does it (with tools). If it's
         # addressed to someone, that's the worker; otherwise pick the most fitting
         # teammate, so an unaddressed "почистите доску" doesn't fall into the
@@ -271,6 +280,28 @@ class TelegramManager:
                 depth += 1
         finally:
             presence.clear_activity(worker)
+
+    async def _run_group_claude(self, chat, transcript: str) -> None:
+        """All group responses via the Claude Code CLI (subscription) — one claude
+        session decides + replies (and delegates + does real file work for actual
+        tasks). Steps stream to the office; the answer is posted via the team bot.
+        Empty answer (SILENT) = stay quiet."""
+        from src.graph.team_graph import arun_group_claude
+
+        async def on_event(_kind: str, line: str) -> None:
+            try:
+                from src.events import hub
+                hub.publish({"event": "step", "actor": "claude", "text": line[:160]})
+            except Exception:  # noqa: BLE001
+                pass
+
+        try:
+            answer = await arun_group_claude(transcript, str(chat.id), on_event)
+        except Exception:  # noqa: BLE001 - never let the engine crash the handler
+            logger.exception("group claude engine crashed")
+            return
+        if answer:
+            await self.post_to_chat(chat.id, answer[:3900])
 
     async def _group_post(self, chat, slug: str, reply: str) -> None:
         """Send one agent's group message via its own bot (with dedup + echo guard)."""
