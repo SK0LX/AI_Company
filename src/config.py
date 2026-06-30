@@ -88,6 +88,19 @@ class Settings(BaseSettings):
     # Hard cap (seconds) on a single `claude -p` task before it's killed.
     claude_timeout: int = 1200
 
+    # Claude-engine permissions (Claude-Code style, via the Agent SDK can_use_tool
+    # callback — see src/claude_perms.py). Each tool the agent uses falls into one
+    # of 4 categories; per category it is auto-allowed OR sent to you as an approval
+    # you resolve in the web dashboard (ASK mode). claude_auto_approve=true is the
+    # global AUTO mode (everything runs, no prompts). The per-category flags apply
+    # when AUTO is off: by default the agent reads + edits files freely, but running
+    # commands (bash/git/build) and reaching the network ASK for your OK in the web.
+    claude_auto_approve: bool = False
+    claude_auto_read: bool = True
+    claude_auto_edit: bool = True
+    claude_auto_exec: bool = False
+    claude_auto_net: bool = False
+
     # Where the SQLite conversation memory lives (persists across restarts).
     db_path: str = "data/memory.sqlite"
 

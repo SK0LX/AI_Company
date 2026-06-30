@@ -31,3 +31,6 @@ pyyaml>=6.0
 
 # System monitor for the dashboard (RAM/disk/uptime) — optional, degrades if absent
 psutil>=5.9
+
+# Claude Agent SDK — runs  in-process with a can_use_tool permission callback
+claude-agent-sdk>=0.2.110

@@ -1498,6 +1498,7 @@ async def _run_specialist_claude(role: str, text: str, project: str) -> str:
     step to the same live office map. Returns the specialist's reply text, with the
     on-disk file list appended (the CEO's ground-truth check, same as the LLM path)."""
     from src import claude_bridge
+    from src.claude_perms import make_can_use_tool
 
     label = registry.label(role)
     cwd = _project_path(project)
@@ -1520,6 +1521,7 @@ async def _run_specialist_claude(role: str, text: str, project: str) -> str:
             permission_mode=settings.claude_permission_mode,
             use_subscription=settings.claude_use_subscription,
             on_step=on_step,
+            can_use_tool=make_can_use_tool(role),  # 4-category permission gate
             timeout=float(settings.claude_timeout),
         )
         if res.get("cost_usd"):
@@ -1557,6 +1559,7 @@ async def _run_team_claude(
     match :func:`arun_team`. This path intentionally bypasses the LangGraph CEO
     (Claude is the orchestrator), so plan-approval/clarify gating does not apply."""
     from src import claude_bridge
+    from src.claude_perms import make_can_use_tool
 
     project = sanitize_project(f"team-{thread_id}" if thread_id else "team")
     cwd = _project_path(project)
@@ -1592,6 +1595,7 @@ async def _run_team_claude(
         permission_mode=settings.claude_permission_mode,
         use_subscription=settings.claude_use_subscription,
         on_step=on_step,
+        can_use_tool=make_can_use_tool("ceo"),  # 4-category permission gate
         timeout=float(settings.claude_timeout),
     )
     if res.get("cost_usd"):

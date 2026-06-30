@@ -29,7 +29,7 @@ def _install_fake_run_claude(answer: str = "FAKE-ANSWER", *, ok: bool = True,
                              cost: float = 0.01):
     async def fake_run_claude(prompt, *, cwd, resume=None, agents=None, model=None,
                               permission_mode="acceptEdits", use_subscription=False,
-                              on_step=None, timeout=1200.0):
+                              on_step=None, can_use_tool=None, timeout=1200.0):
         _calls.append({
             "prompt": prompt, "cwd": cwd, "agents": agents, "model": model,
             "permission_mode": permission_mode, "use_subscription": use_subscription,

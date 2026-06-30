@@ -44,6 +44,11 @@ _KIND_LABEL = {
     "self_modify": "Изменить собственный код",
     "budget_override": "Превысить бюджет",
     "risky_delete": "Удалить файлы",
+    # Claude-engine per-category tool approvals (see src/claude_perms.py)
+    "agent_read": "Агент: чтение файлов",
+    "agent_edit": "Агент: правка файлов",
+    "agent_exec": "Агент: команда (bash/git)",
+    "agent_net": "Агент: сеть (web/загрузка)",
 }
 
 
@@ -114,15 +119,20 @@ def _format(kind: str, summary: str) -> str:
 
 # --- the public approval API ------------------------------------------------
 
-async def request_approval(kind: str, summary: str, *, agent: str = "system") -> bool:
+async def request_approval(
+    kind: str, summary: str, *, agent: str = "system", require_asker: bool = True,
+) -> bool:
     """Record a pending approval, ask the user, record + return the decision.
 
-    Denies immediately if no asker is installed. Otherwise the Telegram asker and
-    the dashboard (:func:`decide`) race — whichever answers first wins, bounded by
-    ``command_approval_timeout``."""
+    The Telegram asker (if installed) and the dashboard (:func:`decide`) race —
+    whichever answers first wins, bounded by ``command_approval_timeout``. The
+    dashboard resolves through a module-global future, so it works even when this
+    runs in an async context with no asker (e.g. the Claude-engine permission
+    callback). ``require_asker=True`` keeps the old behaviour — deny at once if no
+    asker is installed; pass ``False`` to allow web-only approval."""
     approval_id = _record_pending(kind, summary, agent)
     fn = _asker.get()
-    if fn is None:
+    if fn is None and require_asker:
         _record_decision(approval_id, False, reason="no approver installed")
         return False
 
@@ -139,13 +149,14 @@ async def request_approval(kind: str, summary: str, *, agent: str = "system") ->
         if not fut.done():
             fut.set_result((ok, "telegram"))
 
-    tg_task = asyncio.create_task(_ask_telegram())
+    tg_task = asyncio.create_task(_ask_telegram()) if fn is not None else None
     try:
         approved, via = await asyncio.wait_for(fut, timeout=settings.command_approval_timeout)
     except (asyncio.TimeoutError, asyncio.CancelledError):
         approved, via = False, "timeout"
     finally:
-        tg_task.cancel()
+        if tg_task is not None:
+            tg_task.cancel()
         if approval_id is not None:
             _pending.pop(approval_id, None)
     _record_decision(approval_id, approved, reason=via)

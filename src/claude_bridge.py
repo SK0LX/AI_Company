@@ -69,6 +69,7 @@ async def run_claude(
     permission_mode: str = "acceptEdits",
     use_subscription: bool = False,
     on_step: Optional[StepCb] = None,
+    can_use_tool: Optional[Callable] = None,
     timeout: float = 1200.0,
 ) -> dict:
     """Run one task via `claude -p` (stream-json) and return
@@ -77,7 +78,17 @@ async def run_claude(
     ``use_subscription``: claude prefers ANTHROPIC_API_KEY over a logged-in
     subscription whenever the env var is present. Set this to drop the key from the
     subprocess so it falls back to the `claude login` credentials (the cheap path).
+
+    ``can_use_tool``: a Claude-Agent-SDK permission callback (see src/claude_perms).
+    When given, the task runs through the in-process Agent SDK instead of the raw
+    CLI so every tool use passes the 4-category permission gate (auto / web-ask).
     """
+    if can_use_tool is not None:
+        return await run_claude_sdk(
+            prompt, cwd=cwd, resume=resume, agents=agents, model=model,
+            use_subscription=use_subscription, on_step=on_step,
+            can_use_tool=can_use_tool, timeout=timeout,
+        )
     cmd = ["claude", "-p", prompt, "--output-format", "stream-json", "--verbose",
            "--permission-mode", permission_mode]
     if agents:
@@ -149,4 +160,82 @@ async def run_claude(
         err = str(exc)
     if not ok and not err:
         err = (await proc.stderr.read()).decode("utf-8", "replace")[:300] if proc.stderr else "failed"
+    return {"ok": ok, "answer": answer, "session_id": session_id, "cost_usd": cost, "error": err}
+
+
+async def run_claude_sdk(
+    prompt: str,
+    *,
+    cwd: str,
+    resume: Optional[str] = None,
+    agents: Optional[dict] = None,
+    model: Optional[str] = None,
+    use_subscription: bool = False,
+    on_step: Optional[StepCb] = None,
+    can_use_tool: Optional[Callable] = None,
+    timeout: float = 1200.0,
+) -> dict:
+    """Same contract as :func:`run_claude`, but runs the task IN-PROCESS through the
+    Claude Agent SDK so a ``can_use_tool`` callback governs every tool use (the
+    4-category permission model). Returns {ok, answer, session_id, cost_usd, error}
+    and streams on_step(kind, text) live, exactly like the CLI path."""
+    from claude_agent_sdk import (
+        AgentDefinition, AssistantMessage, ClaudeAgentOptions, ResultMessage,
+        SystemMessage, TextBlock, ToolUseBlock, query,
+    )
+
+    sdk_agents = None
+    if agents:
+        sdk_agents = {
+            name: AgentDefinition(description=a.get("description", ""), prompt=a.get("prompt", ""))
+            for name, a in agents.items()
+        }
+    env = {k: v for k, v in os.environ.items()
+           if not (use_subscription and k == "ANTHROPIC_API_KEY")}
+    options = ClaudeAgentOptions(
+        cwd=cwd, model=(model or None), resume=resume, env=env,
+        agents=sdk_agents, can_use_tool=can_use_tool,
+        permission_mode="default",  # every gated tool routes to can_use_tool
+    )
+    answer, session_id, cost, ok, err = "", None, 0.0, False, ""
+
+    async def _emit(kind: str, text: str) -> None:
+        if on_step and text:
+            try:
+                await on_step(kind, text)
+            except Exception:  # noqa: BLE001
+                pass
+
+    async def _run() -> None:
+        nonlocal answer, session_id, cost, ok, err
+        async for msg in query(prompt=prompt, options=options):
+            if isinstance(msg, SystemMessage):
+                session_id = getattr(msg, "session_id", None) or session_id
+            elif isinstance(msg, AssistantMessage):
+                for block in (msg.content or []):
+                    if isinstance(block, TextBlock) and block.text.strip():
+                        await _emit("think", block.text.strip())
+                    elif isinstance(block, ToolUseBlock):
+                        name, ti = block.name, (block.input or {})
+                        if name in ("Agent", "Task"):
+                            who = ti.get("subagent_type") or ti.get("description") or "субагент"
+                            what = ti.get("description") or ti.get("prompt") or ""
+                            await _emit("delegate", f"↪️ {who}: {str(what)[:80]}")
+                        else:
+                            hint = ti.get("file_path") or ti.get("path") or ti.get("command") or ti.get("pattern") or ti.get("url") or ""
+                            await _emit("tool", f"🔧 {name} {str(hint)[:60]}".strip())
+            elif isinstance(msg, ResultMessage):
+                ok = not msg.is_error
+                answer = msg.result or answer
+                cost = float(msg.total_cost_usd or 0.0)
+                session_id = msg.session_id or session_id
+                await _emit("result", answer)
+
+    try:
+        await asyncio.wait_for(_run(), timeout=timeout)
+    except asyncio.TimeoutError:
+        err = f"timeout after {timeout}s"
+    except Exception as exc:  # noqa: BLE001
+        err = str(exc)
+        logger.exception("claude SDK run failed")
     return {"ok": ok, "answer": answer, "session_id": session_id, "cost_usd": cost, "error": err}
