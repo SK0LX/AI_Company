@@ -193,13 +193,17 @@ class TelegramManager:
         roster = [(s, registry.label(s), registry.get(s).role) for s in present]
         transcript = gc.transcript_text(chat.id)
 
-        # Claude-CLI engine: route the WHOLE group message (chatter OR work) through
-        # ONE `claude -p` session under the subscription, instead of the native
-        # per-agent LLM decides. This keeps the team answering via the console and
-        # spends ZERO per-token API money on group chatter.
+        # Claude-CLI engine (subscription, zero per-token API money): a real WORK
+        # request goes to the lead-and-workers flow — a lead splits it into subtasks
+        # and hands each to a NAMED agent (its own claude session, posting via its
+        # own bot), the original AI-office way. Plain chatter gets ONE light claude
+        # reply (no need to spin the whole team for a greeting).
         from src.config import settings as _eng
         if _eng.team_engine == "claude_cli":
-            await self._run_group_claude(chat, transcript)
+            if gc.work_intent(text):
+                await self._run_group_team_claude(chat, text)
+            else:
+                await self._run_group_claude(chat, transcript)
             return
 
         # A work request -> ONE agent actually does it (with tools). If it's
@@ -302,6 +306,45 @@ class TelegramManager:
             return
         if answer:
             await self.post_to_chat(chat.id, answer[:3900])
+
+    async def _run_group_team_claude(self, chat, text: str) -> None:
+        """Lead-and-workers on the Claude engine: a lead splits a WORK request into
+        subtasks for NAMED agents; each agent runs its subtask as its OWN claude
+        session (subscription) and reports via its OWN Telegram bot. Multiple real
+        agents do the work — the original AI-office vision, with zero API money."""
+        from src import presence
+        from src.graph.team_graph import arun_group_plan, arun_specialist
+
+        project = f"group-{chat.id}"
+        await self.post_to_chat(chat.id, "🧠 Тех-лид разбирает задачу и раздаёт её команде…")
+        try:
+            plan = await arun_group_plan(text)
+        except Exception:  # noqa: BLE001
+            logger.exception("group plan failed")
+            plan = []
+        if not plan:
+            # couldn't plan -> let one claude session just handle it
+            from src import group_chat as gc
+            await self._run_group_claude(chat, gc.transcript_text(chat.id))
+            return
+
+        await self.post_to_chat(
+            chat.id,
+            "📋 План:\n" + "\n".join(f"• {registry.label(s)} — {t[:90]}" for s, t in plan),
+        )
+        for slug, subtask in plan:
+            presence.set_activity(slug, "working", _work_note(slug))
+            try:
+                result = await arun_specialist(slug, subtask, project)
+            except Exception:  # noqa: BLE001
+                logger.exception("group team agent %s failed", slug)
+                result = "не получилось выполнить подзадачу — гляну ещё раз."
+            presence.clear_activity(slug)
+            out = (result or "").strip()[:3500] or "готово."
+            if slug in self._agent_apps:
+                await self.post_as(slug, chat.id, out)  # the agent's OWN bot
+            else:
+                await self.post_to_chat(chat.id, f"{registry.label(slug)}: {out}")
 
     async def _group_post(self, chat, slug: str, reply: str) -> None:
         """Send one agent's group message via its own bot (with dedup + echo guard)."""

@@ -1674,6 +1674,66 @@ async def arun_group_claude(
     return answer
 
 
+async def arun_group_plan(task: str) -> list[tuple[str, str]]:
+    """Lead step (supervisor model): ONE `claude -p` call breaks a work request into
+    1–4 concrete subtasks, each assigned to a NAMED teammate. Returns
+    [(agent_slug, subtask)], validated against the enabled roster. The manager then
+    runs each named agent (its own claude session) and posts via its own bot — so
+    multiple real agents do the work, the original AI-office way, on the subscription."""
+    from src import claude_bridge
+
+    slugs = registry.specialist_slugs(enabled_only=True)
+    if not slugs:
+        return []
+    roster = "\n".join(
+        f"- {s}: {registry.label(s)} — {(registry.obligation(s) or '').strip()[:80]}"
+        for s in slugs
+    )
+    prompt = (
+        "Ты — тех-лид команды. Разбей задачу на 1–4 КОНКРЕТНЫЕ подзадачи и назначь "
+        "каждую ОДНОМУ подходящему коллеге. Ответь СТРОГО списком строк формата:\n"
+        "slug: подзадача\n"
+        "Без markdown, без звёздочек, без нумерации, без любого другого текста — "
+        "только строки вида slug: текст. Используй только эти slug:\n"
+        f"{roster}\n\nЗадача:\n{task}"
+    )
+    res = await claude_bridge.run_claude(
+        prompt=prompt, cwd=_project_path("plan"), agents=None,
+        model=(settings.claude_model or "").strip() or None,
+        permission_mode="default",
+        use_subscription=settings.claude_use_subscription,
+        timeout=float(settings.claude_timeout),
+    )
+    if res.get("cost_usd"):
+        try:
+            budget.record_usd(settings.claude_model or "claude", res["cost_usd"], agent="ceo")
+        except Exception:  # noqa: BLE001
+            logger.exception("failed to record claude cost")
+    valid = set(slugs)
+    by_label = {registry.label(s).lower(): s for s in slugs}
+    plan: list[tuple[str, str]] = []
+    for line in (res.get("answer") or "").splitlines():
+        if ":" not in line:
+            continue
+        who, _, sub = line.partition(":")
+        # strip markdown / numbering / bullets that Claude sometimes adds
+        who = who.strip().strip("*`#>-•0123456789. ").lower().lstrip("@").strip()
+        sub = sub.strip().strip("*`").strip()
+        if not who or not sub:
+            continue
+        slug = who if who in valid else by_label.get(who)
+        if not slug:  # fuzzy: substring either direction (slug or its label)
+            slug = next(
+                (s for s in slugs
+                 if who in s.lower() or s.lower() in who
+                 or who in registry.label(s).lower() or registry.label(s).lower() in who),
+                None,
+            )
+        if slug:
+            plan.append((slug, sub))
+    return plan[:4]
+
+
 # --- public API -------------------------------------------------------------
 
 async def arun_team(
