@@ -313,7 +313,7 @@ class TelegramManager:
         session (subscription) and reports via its OWN Telegram bot. Multiple real
         agents do the work — the original AI-office vision, with zero API money."""
         from src import presence
-        from src.graph.team_graph import arun_group_plan, arun_specialist
+        from src.graph.team_graph import arun_group_plan, arun_group_summary, arun_specialist
 
         project = f"group-{chat.id}"
         await self.post_to_chat(chat.id, "🧠 Тех-лид разбирает задачу и раздаёт её команде…")
@@ -332,6 +332,7 @@ class TelegramManager:
             chat.id,
             "📋 План:\n" + "\n".join(f"• {registry.label(s)} — {t[:90]}" for s, t in plan),
         )
+        results: list[tuple[str, str]] = []
         for slug, subtask in plan:
             presence.set_activity(slug, "working", _work_note(slug))
             try:
@@ -341,10 +342,20 @@ class TelegramManager:
                 result = "не получилось выполнить подзадачу — гляну ещё раз."
             presence.clear_activity(slug)
             out = (result or "").strip()[:3500] or "готово."
+            results.append((slug, out))
             if slug in self._agent_apps:
                 await self.post_as(slug, chat.id, out)  # the agent's OWN bot
             else:
                 await self.post_to_chat(chat.id, f"{registry.label(slug)}: {out}")
+
+        # Lead wrap-up: the tech-lead summarizes what the team produced.
+        try:
+            summary = await arun_group_summary(text, results)
+        except Exception:  # noqa: BLE001
+            logger.exception("group summary failed")
+            summary = ""
+        if summary:
+            await self.post_to_chat(chat.id, "✅ Итог тех-лида:\n" + summary[:3500])
 
     async def _group_post(self, chat, slug: str, reply: str) -> None:
         """Send one agent's group message via its own bot (with dedup + echo guard)."""

@@ -545,8 +545,9 @@ def _publish_step(slug: str, note: str, *, tool: str = "claude") -> None:
         from src import presence
         from src.events import hub
 
-        presence.set_activity(slug, "working", note)
-        hub.publish({"event": "step", "actor": slug, "tool": tool, "text": note})
+        presence.set_activity(slug, "working", note)  # office node (keyed by slug)
+        # ticker shows the agent's DISPLAY NAME, not the raw slug or "claude"
+        hub.publish({"event": "step", "actor": registry.label(slug) or slug, "tool": tool, "text": note})
     except Exception:  # noqa: BLE001 - tracing must never break a run
         pass
 
@@ -1732,6 +1733,36 @@ async def arun_group_plan(task: str) -> list[tuple[str, str]]:
         if slug:
             plan.append((slug, sub))
     return plan[:4]
+
+
+async def arun_group_summary(task: str, results: list[tuple[str, str]]) -> str:
+    """Lead wrap-up (supervisor model): ONE `claude -p` call reads the named agents'
+    reports and produces a short итог for the chat — what's done, key files, what's
+    left. Returns "" on failure (then the manager just skips it)."""
+    from src import claude_bridge
+
+    body = "\n\n".join(
+        f"## {registry.label(s)}\n{(r or '').strip()[:700]}" for s, r in results
+    )
+    prompt = (
+        "Ты — тех-лид. Команда выполнила задачу, ниже отчёты участников. Дай КОРОТКИЙ "
+        "итог для общего чата (2–4 предложения, на языке задачи): что готово, ключевые "
+        "файлы и что осталось доделать. Без воды и без markdown-заголовков.\n\n"
+        f"Задача:\n{task}\n\nОтчёты команды:\n{body}"
+    )
+    res = await claude_bridge.run_claude(
+        prompt=prompt, cwd=_project_path("summary"), agents=None,
+        model=(settings.claude_model or "").strip() or None,
+        permission_mode="default",
+        use_subscription=settings.claude_use_subscription,
+        timeout=float(settings.claude_timeout),
+    )
+    if res.get("cost_usd"):
+        try:
+            budget.record_usd(settings.claude_model or "claude", res["cost_usd"], agent="ceo")
+        except Exception:  # noqa: BLE001
+            logger.exception("failed to record claude cost")
+    return (res.get("answer") or "").strip() if res.get("ok") else ""
 
 
 # --- public API -------------------------------------------------------------
