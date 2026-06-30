@@ -1001,7 +1001,9 @@ async def aensure_russian(text: str) -> str:
     English), so if the text has no Cyrillic at all we translate it. Text that's
     already Russian is returned untouched (no extra model call)."""
     text = (text or "").strip()
-    if not text or _has_cyrillic(text):
+    # The Claude engine answers in the user's language already; never spend a paid
+    # API translate call in claude_cli mode (the point is ZERO per-token API cost).
+    if not text or _has_cyrillic(text) or settings.team_engine == "claude_cli":
         return text
     return await atranslate_ru(text)
 
@@ -1892,12 +1894,49 @@ async def arun_specialist(role: str, text: str, project: str = "") -> str:
     return _content_to_text(response.content) or "..."
 
 
+async def _agent_dm_claude(
+    slug: str, text: str, history: Optional[list[tuple[str, str]]] = None,
+) -> str:
+    """Personal-DM reply via the Claude Code CLI (subscription): a 1:1 chat with one
+    persona, no subagents/tools — so it spends no per-token API money."""
+    from src import claude_bridge
+
+    label = registry.label(slug)
+    hist = "\n".join(
+        f"{'Пользователь' if w == 'user' else label}: {c}" for w, c in (history or [])
+    )
+    prompt = (
+        f"{registry.prompt(slug)}\n\nТы — {label}, общаешься 1-на-1 в личке. Ответь "
+        "коротко, по делу, на языке собеседника. Это просто разговор — никаких "
+        "файлов и команд.\n\n"
+        + (f"Недавняя переписка:\n{hist}\n\n" if hist else "")
+        + f"Сообщение: {text}"
+    )
+    res = await claude_bridge.run_claude(
+        prompt=prompt, cwd=_project_path(f"dm-{slug}"), agents=None,
+        model=(settings.claude_model or "").strip() or None,
+        permission_mode=settings.claude_permission_mode,
+        use_subscription=settings.claude_use_subscription,
+        timeout=float(settings.claude_timeout),
+    )
+    if res.get("cost_usd"):
+        try:
+            budget.record_usd(settings.claude_model or "claude", res["cost_usd"], agent=slug)
+        except Exception:  # noqa: BLE001
+            logger.exception("failed to record claude cost")
+    return (res.get("answer") or "...").strip() if res.get("ok") else "⚠️ Не получилось ответить."
+
+
 async def aagent_reply(
     slug: str, text: str, history: Optional[list[tuple[str, str]]] = None
 ) -> str:
     """A conversational reply from one agent in its OWN Telegram bot (a personal
     DM). Uses the agent's prompt + recent history; no orchestration, no file/shell
     tools — it's a chat with that specialist. Output is in the user's language."""
+    # Claude engine: a personal DM also goes through `claude -p` (subscription), so
+    # even 1:1 chats spend no per-token API money.
+    if _engine_for(slug) == "claude_cli":
+        return await _agent_dm_claude(slug, text, history)
     messages: list[BaseMessage] = [SystemMessage(content=registry.prompt(slug))]
     for who, content in history or []:
         messages.append(
