@@ -110,6 +110,10 @@ async def run_claude(
 
     env = {k: v for k, v in os.environ.items()
            if not (use_subscription and k == "ANTHROPIC_API_KEY")}
+    if no_tools:
+        # These are quick decisions — extended thinking roughly doubles their wall
+        # time (haiku "thinks" 10-20s for a one-line answer). Turn it off for speed.
+        env["MAX_THINKING_TOKENS"] = "0"
     proc = await asyncio.create_subprocess_exec(
         *cmd, cwd=cwd, env=env,
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
