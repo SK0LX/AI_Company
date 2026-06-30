@@ -1714,17 +1714,23 @@ async def arun_group_plan(task: str) -> list[tuple[str, str]]:
             budget.record_usd(settings.claude_model or "claude", res["cost_usd"], agent="ceo")
         except Exception:  # noqa: BLE001
             logger.exception("failed to record claude cost")
+    return _parse_plan_lines(res.get("answer") or "", slugs)
+
+
+def _parse_plan_lines(answer: str, slugs: list[str]) -> list[tuple[str, str]]:
+    """Parse the lead's 'slug: подзадача' output into validated (slug, subtask) pairs.
+    Robust to markdown/numbering/bullets; resolves slug by exact/label/fuzzy match."""
     valid = set(slugs)
     by_label = {registry.label(s).lower(): s for s in slugs}
     plan: list[tuple[str, str]] = []
-    for line in (res.get("answer") or "").splitlines():
+    for line in (answer or "").splitlines():
         if ":" not in line:
             continue
         who, _, sub = line.partition(":")
         # strip markdown / numbering / bullets that Claude sometimes adds
         who = who.strip().strip("*`#>-•0123456789. ").lower().lstrip("@").strip()
         sub = sub.strip().strip("*`").strip()
-        if not who or not sub:
+        if not who or not sub or who == "chat":
             continue
         slug = who if who in valid else by_label.get(who)
         if not slug:  # fuzzy: substring either direction (slug or its label)
@@ -1737,6 +1743,65 @@ async def arun_group_plan(task: str) -> list[tuple[str, str]]:
         if slug:
             plan.append((slug, sub))
     return plan[:4]
+
+
+async def arun_group_route(task: str) -> tuple[str, object]:
+    """Lead ROUTER — the single entry for every group message on the Claude engine.
+    ONE `claude -p` call where the tech-lead DECIDES what to do (no brittle keyword
+    gate): either reply itself for chit-chat, or delegate to NAMED teammates for real
+    work. Returns ``("chat", reply)`` or ``("work", [(slug, subtask), …])``. This is
+    the 'lead decides who handles it' chain the user asked for — e.g. 'проанализируй
+    репо' is delegated to a real agent (own bot, permission gate), never done by a
+    lone claude session."""
+    from src import claude_bridge
+
+    slugs = registry.specialist_slugs(enabled_only=True)
+    if not slugs:
+        return ("chat", "")
+    roster = "\n".join(
+        f"- {s}: {registry.label(s)} — {(registry.obligation(s) or '').strip()[:80]}"
+        for s in slugs
+    )
+    prompt = (
+        "Ты — тех-лид команды в общем рабочем чате. Пришло сообщение — реши, что делать.\n"
+        "• Если это болтовня / приветствие / вопрос не по работе — ответь сам ОДНОЙ "
+        "строкой, начав её с 'CHAT: ' (например «CHAT: привет, чем помочь?»). Если "
+        "отвечать не нужно — верни «CHAT: SILENT».\n"
+        "• Если это РАБОЧАЯ задача (разобрать/проверить/сделать/написать проект, "
+        "репозиторий, код, лендинг и т.п.) — НЕ делай её сам. Разбей на 1–4 КОНКРЕТНЫЕ "
+        "подзадачи и назначь каждую ОДНОМУ подходящему коллеге, по строке формата "
+        "«slug: подзадача». Используй только эти slug:\n"
+        f"{roster}\n\n"
+        "Ответ строго один из двух форматов: либо ОДНА строка «CHAT: …», либо ТОЛЬКО "
+        "строки «slug: подзадача» (без markdown, нумерации и любого другого текста).\n\n"
+        f"Сообщение:\n{task}"
+    )
+    res = await claude_bridge.run_claude(
+        prompt=prompt, cwd=_project_path("route"), agents=None,
+        model=(settings.claude_model or "").strip() or None,
+        permission_mode="default",
+        use_subscription=settings.claude_use_subscription,
+        timeout=float(settings.claude_timeout),
+    )
+    if res.get("cost_usd"):
+        try:
+            budget.record_usd(settings.claude_model or "claude", res["cost_usd"], agent="ceo")
+        except Exception:  # noqa: BLE001
+            logger.exception("failed to record claude cost")
+    answer = (res.get("answer") or "").strip()
+    for line in answer.splitlines():
+        stripped = line.strip().strip("*`> ").strip()
+        if stripped.upper().startswith("CHAT:"):
+            reply = stripped[5:].strip()
+            if reply.strip(" .!\"'").upper() == "SILENT":
+                return ("chat", "")
+            return ("chat", reply)
+    plan = _parse_plan_lines(answer, slugs)
+    if plan:
+        return ("work", plan)
+    # Neither a CHAT line nor a parseable plan: treat a short answer as a chat reply,
+    # otherwise let the caller hand it to a default agent.
+    return ("chat", answer if 0 < len(answer) < 600 else "")
 
 
 async def arun_group_summary(task: str, results: list[tuple[str, str]]) -> str:

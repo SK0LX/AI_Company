@@ -193,17 +193,14 @@ class TelegramManager:
         roster = [(s, registry.label(s), registry.get(s).role) for s in present]
         transcript = gc.transcript_text(chat.id)
 
-        # Claude-CLI engine (subscription, zero per-token API money): a real WORK
-        # request goes to the lead-and-workers flow — a lead splits it into subtasks
-        # and hands each to a NAMED agent (its own claude session, posting via its
-        # own bot), the original AI-office way. Plain chatter gets ONE light claude
-        # reply (no need to spin the whole team for a greeting).
+        # Claude-CLI engine (subscription, zero per-token API money): EVERY message
+        # goes through the lead ROUTER — the tech-lead itself decides whether to reply
+        # (chit-chat) or delegate to NAMED agents (real work), instead of a brittle
+        # keyword gate. Work always flows to a named agent (own claude session +
+        # permission gate + own bot), never a lone claude doing it all.
         from src.config import settings as _eng
         if _eng.team_engine == "claude_cli":
-            if gc.work_intent(text):
-                await self._run_group_team_claude(chat, text)
-            else:
-                await self._run_group_claude(chat, transcript)
+            await self._run_group_team_claude(chat, text)
             return
 
         # A work request -> ONE agent actually does it (with tools). If it's
@@ -313,27 +310,35 @@ class TelegramManager:
         session (subscription) and reports via its OWN Telegram bot. Multiple real
         agents do the work — the original AI-office vision, with zero API money."""
         from src import presence
-        from src.graph.team_graph import arun_group_plan, arun_group_summary, arun_specialist
+        from src.graph.team_graph import arun_group_route, arun_group_summary, arun_specialist
 
         self._approval_chat_id = chat.id  # permission buttons go to THIS chat
         project = f"group-{chat.id}"
-        await self.post_to_chat(chat.id, "🧠 Тех-лид разбирает задачу и раздаёт её команде…")
+
+        # The lead router decides: reply itself (chit-chat) or delegate (work).
         try:
-            plan = await arun_group_plan(text)
+            kind, payload = await arun_group_route(text)
         except Exception:  # noqa: BLE001
-            logger.exception("group plan failed")
-            plan = []
+            logger.exception("group route failed")
+            kind, payload = "work", []
+
+        if kind == "chat":
+            reply = (payload or "").strip() if isinstance(payload, str) else ""
+            if reply:
+                await self.post_to_chat(chat.id, reply)  # the lead's own reply
+            return
+
+        plan = list(payload) if isinstance(payload, list) else []
         if not plan:
-            # The lead couldn't split it. NEVER fall back to one 'claude' doing
-            # everything itself — hand the whole task to the best-fit NAMED agent so
-            # a real teammate (own bot, visible in chat) does the work.
+            # The lead flagged work but couldn't split it — hand the WHOLE task to the
+            # best-fit NAMED agent so a real teammate (own bot) does it, never a lone
+            # claude session.
             default_slug = self._default_group_agent()
             if not default_slug:
-                from src import group_chat as gc
-                await self._run_group_claude(chat, gc.transcript_text(chat.id))
                 return
             plan = [(default_slug, text)]
 
+        await self.post_to_chat(chat.id, "🧠 Тех-лид раздаёт задачу команде…")
         await self.post_to_chat(
             chat.id,
             "📋 План:\n" + "\n".join(f"• {registry.label(s)} — {t[:90]}" for s, t in plan),
