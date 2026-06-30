@@ -410,6 +410,48 @@ async def _ask_command(bot, chat_id: int, command: str) -> bool:
         _cmd_pending.pop(rid, None)
 
 
+async def on_appr_callback(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """Resolve a Claude-engine permission approval from its Telegram button.
+
+    callback_data is ``appr:{approval_id}:ok|no``. Unlike the shell path (which
+    owns its own _cmd_pending future), this resolves the typed-approval system via
+    ``approvals.decide`` — the SAME future the web dashboard would, so Telegram and
+    the dashboard race and whichever taps first wins."""
+    from src import approvals
+
+    query = update.callback_query
+    if not query:
+        return
+    try:
+        await query.answer()
+    except Exception:  # noqa: BLE001
+        pass
+    parts = (query.data or "").split(":")
+    try:
+        approval_id = int(parts[1])
+    except (IndexError, ValueError):
+        return
+    approved = len(parts) > 2 and parts[2] == "ok"
+    try:
+        await query.edit_message_reply_markup(reply_markup=None)
+    except BadRequest:
+        pass
+    resolved = approvals.decide(approval_id, approved, reason="telegram")
+    chat_id = update.effective_chat.id if update.effective_chat else None
+    if chat_id is None:
+        return
+    if resolved:
+        await context.bot.send_message(
+            chat_id=chat_id, text="✅ Разрешено." if approved else "⛔ Запрещено."
+        )
+    else:
+        await context.bot.send_message(
+            chat_id=chat_id, text="⏳ Это согласование уже неактуально."
+        )
+
+
 async def on_cmd_callback(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> None:
@@ -539,6 +581,7 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("ask", ask_cmd))
     app.add_handler(CallbackQueryHandler(on_plan_callback, pattern=r"^plan:"))
     app.add_handler(CallbackQueryHandler(on_cmd_callback, pattern=r"^cmd:"))
+    app.add_handler(CallbackQueryHandler(on_appr_callback, pattern=r"^appr:"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_message))
     app.add_error_handler(on_error)
     return app

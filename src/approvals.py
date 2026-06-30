@@ -39,6 +39,20 @@ _asker: contextvars.ContextVar[Optional[Asker]] = contextvars.ContextVar(
 # it races the Telegram asker — whichever answers first wins.
 _pending: dict[int, "asyncio.Future"] = {}
 
+# Optional notifier: push an Allow/Deny button into Telegram for approvals that
+# have NO contextvar asker (e.g. the Claude-engine permission gate, which is
+# web-resolvable). fn(approval_id, kind, summary, agent) — best-effort, the bot
+# installs it (see TelegramManager.notify_approval). Lets the user approve from
+# the phone instead of only the web dashboard.
+ApprovalNotifier = Callable[[int, str, str, str], None]
+_approval_notifier: Optional[ApprovalNotifier] = None
+
+
+def set_approval_notifier(fn: Optional[ApprovalNotifier]) -> None:
+    """Install (or clear) the Telegram approval-button notifier."""
+    global _approval_notifier
+    _approval_notifier = fn
+
 _KIND_LABEL = {
     "shell": "Запустить команду",
     "self_modify": "Изменить собственный код",
@@ -140,6 +154,16 @@ async def request_approval(
     fut: asyncio.Future = loop.create_future()
     if approval_id is not None:
         _pending[approval_id] = fut
+
+    # No contextvar asker (e.g. a Claude-engine permission gate) but a Telegram
+    # notifier is installed → push an Allow/Deny button to the chat so the user can
+    # approve from the phone. It resolves the SAME future via decide(), racing the
+    # web dashboard. (When fn is set, the shell asker already sends its own buttons.)
+    if fn is None and _approval_notifier is not None and approval_id is not None:
+        try:
+            _approval_notifier(approval_id, kind, summary, agent)
+        except Exception:  # noqa: BLE001 - a broken notifier must not block the gate
+            logger.exception("approval notifier failed")
 
     async def _ask_telegram() -> None:
         try:

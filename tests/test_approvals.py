@@ -110,11 +110,51 @@ async def _telegram_wins() -> None:
         approvals.clear_asker()
 
 
+async def _agent_notifier() -> None:
+    """A Claude-engine permission gate (require_asker=False, no asker) fires the
+    Telegram notifier and is resolved by a button tap via decide()."""
+    from src.registry import registry
+
+    registry.setup()
+    approvals.clear_asker()
+    seen: list[tuple[int, str, str]] = []
+
+    def notifier(approval_id: int, kind: str, summary: str, agent: str) -> None:
+        seen.append((approval_id, kind, agent))
+
+    approvals.set_approval_notifier(notifier)
+    try:
+        task = asyncio.create_task(
+            approvals.request_approval("agent_exec", "Bash: git clone x", agent="developer", require_asker=False)
+        )
+        await asyncio.sleep(0.1)
+        assert seen, "notifier should fire for an agent approval with no asker"
+        aid, kind, agent = seen[-1]
+        assert kind == "agent_exec" and agent == "developer"
+        # the 'Telegram button tap' resolves it
+        assert approvals.decide(aid, True, reason="telegram") is True
+        assert await asyncio.wait_for(task, timeout=2) is True
+
+        # with an asker installed (shell path), the notifier must NOT double-fire
+        seen.clear()
+
+        async def yes(prompt: str) -> bool:
+            return True
+
+        approvals.set_asker(yes)
+        assert await approvals.request_approval("shell", "ls", agent="developer") is True
+        assert not seen, "notifier must not fire when a contextvar asker is present"
+    finally:
+        approvals.set_approval_notifier(None)
+        approvals.clear_asker()
+
+
 def main() -> None:
     asyncio.run(_run())
     asyncio.run(_typed())
     asyncio.run(_web_decision())
     asyncio.run(_telegram_wins())
+    asyncio.run(_agent_notifier())
     print("approvals tests: OK")
 
 

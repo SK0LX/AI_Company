@@ -315,6 +315,7 @@ class TelegramManager:
         from src import presence
         from src.graph.team_graph import arun_group_plan, arun_group_summary, arun_specialist
 
+        self._approval_chat_id = chat.id  # permission buttons go to THIS chat
         project = f"group-{chat.id}"
         await self.post_to_chat(chat.id, "🧠 Тех-лид разбирает задачу и раздаёт её команде…")
         try:
@@ -323,10 +324,15 @@ class TelegramManager:
             logger.exception("group plan failed")
             plan = []
         if not plan:
-            # couldn't plan -> let one claude session just handle it
-            from src import group_chat as gc
-            await self._run_group_claude(chat, gc.transcript_text(chat.id))
-            return
+            # The lead couldn't split it. NEVER fall back to one 'claude' doing
+            # everything itself — hand the whole task to the best-fit NAMED agent so
+            # a real teammate (own bot, visible in chat) does the work.
+            default_slug = self._default_group_agent()
+            if not default_slug:
+                from src import group_chat as gc
+                await self._run_group_claude(chat, gc.transcript_text(chat.id))
+                return
+            plan = [(default_slug, text)]
 
         await self.post_to_chat(
             chat.id,
@@ -334,6 +340,10 @@ class TelegramManager:
         )
         results: list[tuple[str, str]] = []
         for slug, subtask in plan:
+            # Visible hand-off: the agent itself announces it took the subtask, via
+            # its OWN bot — so you SEE "разраб взялся за …" in the chat, not just the
+            # office ticker.
+            await self.post_as(slug, chat.id, f"🛠 Взялся за: {subtask[:300]}")
             presence.set_activity(slug, "working", _work_note(slug))
             try:
                 result = await arun_specialist(slug, subtask, project)
@@ -487,6 +497,49 @@ class TelegramManager:
         except Exception:  # noqa: BLE001 - a failed agent post must not crash anything
             logger.exception("post_as %s failed", slug)
 
+    def notify_approval(self, approval_id: int, kind: str, summary: str, agent: str) -> None:
+        """approvals.set_approval_notifier hook: push an Allow/Deny button into the
+        chat where the current run is happening, so the user can approve a Claude-
+        engine permission from the phone (not only the web dashboard). Best-effort,
+        fire-and-forget — it never blocks the permission gate."""
+        from src.config import settings
+
+        chat_id = getattr(self, "_approval_chat_id", 0) or settings.team_chat_id
+        if not chat_id or self._team_app is None:
+            return
+        try:
+            asyncio.create_task(
+                self._send_approval_button(chat_id, approval_id, summary, agent)
+            )
+        except RuntimeError:  # no running loop (shouldn't happen in the bot)
+            logger.warning("notify_approval: no running loop")
+
+    async def _send_approval_button(
+        self, chat_id: int, approval_id: int, summary: str, agent: str
+    ) -> None:
+        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+
+        who = registry.label(agent) if agent else "Агент"
+        text = f"🔐 {who} просит доступ — разрешить?\n\n{summary}"
+        kb = InlineKeyboardMarkup([[
+            InlineKeyboardButton("✅ Разрешить", callback_data=f"appr:{approval_id}:ok"),
+            InlineKeyboardButton("⛔ Запретить", callback_data=f"appr:{approval_id}:no"),
+        ]])
+        try:
+            await self._team_app.bot.send_message(chat_id=chat_id, text=text, reply_markup=kb)
+        except Exception:  # noqa: BLE001
+            logger.exception("failed to send approval button to chat %s", chat_id)
+
+    def _default_group_agent(self) -> str:
+        """The NAMED agent to hand a WORK task to when the lead couldn't split it —
+        so a real teammate (own bot) does it, never a lone 'claude' session. Prefers
+        a generalist, falls back to the first enabled specialist."""
+        slugs = registry.specialist_slugs(enabled_only=True)
+        for pref in ("developer", "reviewer", "system_analyst", "business_analyst"):
+            if pref in slugs:
+                return pref
+        return slugs[0] if slugs else ""
+
     async def reconcile_now(self) -> None:
         """Reconcile the running bots with the registry right now.
 
@@ -517,6 +570,9 @@ class TelegramManager:
             logger.error("team bot failed to start — check TELEGRAM_BOT_TOKEN")
             self._team_app = None
             return
+        # Route Claude-engine permission approvals to Telegram (Allow/Deny buttons)
+        from src import approvals
+        approvals.set_approval_notifier(self.notify_approval)
         await self._configure_webapp("команда", self._team_app)
         try:
             self._bot_ids.add(self._team_app.bot.id)
