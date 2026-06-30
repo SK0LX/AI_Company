@@ -180,8 +180,8 @@ async def run_claude_sdk(
     4-category permission model). Returns {ok, answer, session_id, cost_usd, error}
     and streams on_step(kind, text) live, exactly like the CLI path."""
     from claude_agent_sdk import (
-        AgentDefinition, AssistantMessage, ClaudeAgentOptions, ResultMessage,
-        SystemMessage, TextBlock, ToolUseBlock, query,
+        AgentDefinition, AssistantMessage, ClaudeAgentOptions, ClaudeSDKClient,
+        ResultMessage, SystemMessage, TextBlock, ToolUseBlock,
     )
 
     sdk_agents = None
@@ -190,8 +190,13 @@ async def run_claude_sdk(
             name: AgentDefinition(description=a.get("description", ""), prompt=a.get("prompt", ""))
             for name, a in agents.items()
         }
-    env = {k: v for k, v in os.environ.items()
-           if not (use_subscription and k == "ANTHROPIC_API_KEY")}
+    # The SDK MERGES options.env over the inherited environment, so omitting a key
+    # doesn't remove it. To force the subscription login (claude prefers
+    # ANTHROPIC_API_KEY when present), explicitly BLANK the key — empty is falsy, so
+    # claude falls back to `claude login`.
+    env = dict(os.environ)
+    if use_subscription:
+        env["ANTHROPIC_API_KEY"] = ""
     options = ClaudeAgentOptions(
         cwd=cwd, model=(model or None), resume=resume, env=env,
         agents=sdk_agents, can_use_tool=can_use_tool,
@@ -208,28 +213,32 @@ async def run_claude_sdk(
 
     async def _run() -> None:
         nonlocal answer, session_id, cost, ok, err
-        async for msg in query(prompt=prompt, options=options):
-            if isinstance(msg, SystemMessage):
-                session_id = getattr(msg, "session_id", None) or session_id
-            elif isinstance(msg, AssistantMessage):
-                for block in (msg.content or []):
-                    if isinstance(block, TextBlock) and block.text.strip():
-                        await _emit("think", block.text.strip())
-                    elif isinstance(block, ToolUseBlock):
-                        name, ti = block.name, (block.input or {})
-                        if name in ("Agent", "Task"):
-                            who = ti.get("subagent_type") or ti.get("description") or "субагент"
-                            what = ti.get("description") or ti.get("prompt") or ""
-                            await _emit("delegate", f"↪️ {who}: {str(what)[:80]}")
-                        else:
-                            hint = ti.get("file_path") or ti.get("path") or ti.get("command") or ti.get("pattern") or ti.get("url") or ""
-                            await _emit("tool", f"🔧 {name} {str(hint)[:60]}".strip())
-            elif isinstance(msg, ResultMessage):
-                ok = not msg.is_error
-                answer = msg.result or answer
-                cost = float(msg.total_cost_usd or 0.0)
-                session_id = msg.session_id or session_id
-                await _emit("result", answer)
+        # can_use_tool requires streaming mode -> use the client (query() needs a
+        # plain string but rejects callbacks); the client accepts a string prompt.
+        async with ClaudeSDKClient(options=options) as client:
+            await client.query(prompt)
+            async for msg in client.receive_response():
+                if isinstance(msg, SystemMessage):
+                    session_id = getattr(msg, "session_id", None) or session_id
+                elif isinstance(msg, AssistantMessage):
+                    for block in (msg.content or []):
+                        if isinstance(block, TextBlock) and block.text.strip():
+                            await _emit("think", block.text.strip())
+                        elif isinstance(block, ToolUseBlock):
+                            name, ti = block.name, (block.input or {})
+                            if name in ("Agent", "Task"):
+                                who = ti.get("subagent_type") or ti.get("description") or "субагент"
+                                what = ti.get("description") or ti.get("prompt") or ""
+                                await _emit("delegate", f"↪️ {who}: {str(what)[:80]}")
+                            else:
+                                hint = ti.get("file_path") or ti.get("path") or ti.get("command") or ti.get("pattern") or ti.get("url") or ""
+                                await _emit("tool", f"🔧 {name} {str(hint)[:60]}".strip())
+                elif isinstance(msg, ResultMessage):
+                    ok = not msg.is_error
+                    answer = msg.result or answer
+                    cost = float(msg.total_cost_usd or 0.0)
+                    session_id = msg.session_id or session_id
+                    await _emit("result", answer)
 
     try:
         await asyncio.wait_for(_run(), timeout=timeout)
