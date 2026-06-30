@@ -1891,6 +1891,58 @@ async def arun_next_hop(
     return plan[0] if plan else None
 
 
+def _parse_decision(answer: str) -> tuple[str, str]:
+    """Parse one agent's distributed decision into ('work', task) | ('chat', reply) |
+    ('no', ''). Robust to the model adding a label/markdown."""
+    line = next((ln.strip().strip("*`>-• ") for ln in (answer or "").splitlines() if ln.strip()), "")
+    up = line.upper()
+    body = line.split(":", 1)[1].strip() if ":" in line else ""
+    if up.startswith(("РАБОТА", "RABOTA", "WORK")):
+        return ("work", body or line)
+    if up.startswith(("ОТВЕТ", "ANSWER", "CHAT", "REPLY")):
+        return ("chat", body or line)
+    if up.startswith(("НЕТ", "NO", "SILENT", "SKIP", "-")) or not line:
+        return ("no", "")
+    # ambiguous, non-empty → treat as a chat reply (better a reply than silence)
+    return ("chat", line)
+
+
+async def agent_decide(slug: str, message: str) -> tuple[str, str]:
+    """Distributed routing: EACH agent independently decides what to do with a group
+    message — no central lead. ONE fast `claude -p` call (haiku, no tools). Returns
+    ('work', task) | ('chat', reply) | ('no', '')."""
+    from src import claude_bridge
+
+    label = registry.label(slug)
+    oblig = (registry.obligation(slug) or "").strip()
+    prompt = (
+        f"Ты — {label}. Твоя зона ответственности: {oblig or label}. В общий рабочий чат "
+        "пришло сообщение. Реши САМ, как независимый участник команды:\n"
+        "• если по ТВОЕЙ части нужно ПОРАБОТАТЬ (код/файлы/анализ/проверка) — ответь "
+        "«РАБОТА: <кратко что именно сделаешь>»;\n"
+        "• если уместно просто коротко ОТВЕТИТЬ репликой — «ОТВЕТ: <реплика>»;\n"
+        "• если это НЕ твоё — ответь ровно «НЕТ».\n"
+        "Одна строка, без лишнего текста.\n\n"
+        f"Сообщение:\n{message}"
+    )
+    res = await claude_bridge.run_claude(
+        prompt=prompt, cwd=_project_path("route"), agents=None,
+        model=(settings.claude_fast_model or "").strip() or None,
+        permission_mode="default",
+        use_subscription=settings.claude_use_subscription,
+        no_tools=True,
+        timeout=float(settings.claude_timeout),
+    )
+    if res.get("cost_usd"):
+        try:
+            budget.record_usd(settings.claude_fast_model or "claude", res["cost_usd"], agent=slug)
+        except Exception:  # noqa: BLE001
+            logger.exception("failed to record claude cost")
+    if not res.get("ok"):
+        return ("no", "")
+    return _parse_decision(res.get("answer") or "")
+
+
 async def arun_group_summary(task: str, results: list[tuple[str, str]]) -> str:
     """Lead wrap-up (supervisor model): ONE `claude -p` call reads the named agents'
     reports and produces a short итог for the chat — what's done, key files, what's

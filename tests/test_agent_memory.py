@@ -51,9 +51,25 @@ def _board() -> None:
     assert "новая задача" in board and "app.py" not in board
 
 
+def _decision_parse() -> None:
+    from src.graph.team_graph import _parse_decision
+
+    assert _parse_decision("РАБОТА: склонировать и проверить репо") == (
+        "work", "склонировать и проверить репо")
+    assert _parse_decision("ОТВЕТ: привет, я на связи")[0] == "chat"
+    assert _parse_decision("НЕТ") == ("no", "")
+    assert _parse_decision("") == ("no", "")
+    assert _parse_decision("- НЕТ")[0] == "no"
+    # markdown/bullet noise is stripped
+    assert _parse_decision("**РАБОТА:** написать app.py")[0] == "work"
+    # a bare non-empty answer falls back to a chat reply (better than silence)
+    assert _parse_decision("могу глянуть фронтенд")[0] == "chat"
+
+
 def main() -> None:
     _sessions()
     _board()
+    _decision_parse()
     print("agent-memory tests: OK")
 
 

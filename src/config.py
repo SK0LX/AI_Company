@@ -84,6 +84,12 @@ class Settings(BaseSettings):
     # Relay (эстафета) safety cap: max number of agent hops in one chain before it
     # is forced to stop (lead → agent → agent …). Prevents runaway/looping chains.
     claude_relay_max_hops: int = 6
+    # Distributed group mode: on every message EACH agent independently decides to
+    # work / reply / stay silent (no central lead). They run concurrently, but this
+    # caps how many Claude subprocesses run AT ONCE — a memory guard so a small VPS
+    # doesn't OOM (each `claude` is a ~200-300MB node process). Raise it on a bigger
+    # box for more true parallelism.
+    group_max_parallel: int = 3
     # `claude` prefers ANTHROPIC_API_KEY over a logged-in subscription when the
     # env var is present. Set true to DROP the key from the CLI subprocess so it
     # uses the cheaper `claude login` subscription credentials instead.

@@ -305,96 +305,72 @@ class TelegramManager:
             await self.post_to_chat(chat.id, answer[:3900])
 
     async def _run_group_team_claude(self, chat, text: str) -> None:
-        """Lead-and-workers on the Claude engine: a lead splits a WORK request into
-        subtasks for NAMED agents; each agent runs its subtask as its OWN claude
-        session (subscription) and reports via its OWN Telegram bot. Multiple real
-        agents do the work — the original AI-office vision, with zero API money."""
+        """Distributed group mode on the Claude engine: EVERY agent independently
+        decides what to do with a message — work, reply, or stay silent (no central
+        lead deciding for them). Deciders + workers run concurrently, bounded by a
+        semaphore so a small VPS doesn't OOM. Workers share a per-project board
+        (TEAM_MEMORY) and each keeps its OWN resumed session, so they collaborate
+        without re-reading. Zero per-token API money (subscription)."""
+        import asyncio
+
         from src import presence, team_memory
         from src.config import settings
         from src.graph.team_graph import (
-            _project_path, archive_project_to_wiki, arun_group_route,
-            arun_group_summary, arun_next_hop, arun_specialist,
+            _project_path, agent_decide, archive_project_to_wiki, arun_specialist,
         )
 
         self._approval_chat_id = chat.id  # permission buttons go to THIS chat
         project = f"group-{chat.id}"
         project_dir = _project_path(project)
-
-        # The lead router decides (fast model): reply itself (chit-chat) or delegate.
-        try:
-            kind, payload = await arun_group_route(text)
-        except Exception:  # noqa: BLE001
-            logger.exception("group route failed")
-            kind, payload = "work", []
-
-        if kind == "chat":
-            reply = (payload or "").strip() if isinstance(payload, str) else ""
-            if reply:
-                await self.post_to_chat(chat.id, reply)  # the lead's own quick reply
+        slugs = registry.specialist_slugs(enabled_only=True)
+        if not slugs:
             return
 
-        plan = list(payload) if isinstance(payload, list) else []
-        if not plan:
-            default_slug = self._default_group_agent()
-            if not default_slug:
-                return
-            plan = [(default_slug, text)]
+        sem = asyncio.Semaphore(max(1, int(settings.group_max_parallel)))
 
-        # Seed the shared team board for this task (the common memory every agent
-        # reads before working — complements their personal resumed sessions).
+        # PHASE 1 — every agent independently decides (concurrent, capped). Post
+        # casual replies as soon as each agent decides; collect the ones that want
+        # to do real work.
+        async def decide(slug: str) -> tuple[str, tuple[str, str]]:
+            async with sem:
+                try:
+                    return slug, await agent_decide(slug, text)
+                except Exception:  # noqa: BLE001
+                    logger.exception("agent_decide %s failed", slug)
+                    return slug, ("no", "")
+
+        workers: list[tuple[str, str]] = []
+        for fut in asyncio.as_completed([decide(s) for s in slugs]):
+            slug, (kind, payload) = await fut
+            if kind == "chat" and payload:
+                await self.post_as(slug, chat.id, payload[:3500])  # agent's own bot
+            elif kind == "work":
+                workers.append((slug, payload or text))
+
+        if not workers:
+            return
+
+        # PHASE 2 — workers do their part concurrently (capped), sharing the board.
         team_memory.seed(project_dir, text)
 
-        # RELAY (эстафета): the lead picks the STARTING agent; after each agent
-        # finishes it decides itself whether to hand the baton to a teammate. The
-        # chain continues until someone says "done" or the hop cap is hit.
-        await self.post_to_chat(chat.id, f"🧠 Тех-лид запускает эстафету → {registry.label(plan[0][0])}")
-        results: list[tuple[str, str, str]] = []
-        current: tuple[str, str] | None = plan[0]
-        hops = 0
-        max_hops = max(1, int(settings.claude_relay_max_hops))
-        while current and hops < max_hops:
-            slug, subtask = current
-            await self.post_as(slug, chat.id, f"🛠 Взялся за: {subtask[:300]}")
-            presence.set_activity(slug, "working", _work_note(slug))
-            try:
-                result = await arun_specialist(slug, subtask, project)
-            except Exception:  # noqa: BLE001
-                logger.exception("relay agent %s failed", slug)
-                result = "не получилось выполнить подзадачу — гляну ещё раз."
-            presence.clear_activity(slug)
-            out = (result or "").strip()[:3500] or "готово."
-            results.append((slug, subtask, out))
-            team_memory.append(project_dir, registry.label(slug), out)  # shared board
-            if slug in self._agent_apps:
-                await self.post_as(slug, chat.id, out)  # the agent's OWN bot
-            else:
-                await self.post_to_chat(chat.id, f"{registry.label(slug)}: {out}")
-            hops += 1
-            # The agent itself decides the next hop (fast model).
-            try:
-                nxt = await arun_next_hop(slug, text, results) if hops < max_hops else None
-            except Exception:  # noqa: BLE001
-                logger.exception("relay next-hop failed")
-                nxt = None
-            if nxt:
-                await self.post_to_chat(
-                    chat.id,
-                    f"↪️ {registry.label(slug)} передаёт эстафету → "
-                    f"{registry.label(nxt[0])}: {nxt[1][:120]}",
-                )
-            current = nxt
+        async def work(slug: str, task: str) -> None:
+            async with sem:
+                await self.post_as(slug, chat.id, f"🛠 Взялся: {task[:200]}")
+                presence.set_activity(slug, "working", _work_note(slug))
+                try:
+                    result = await arun_specialist(slug, task, project)
+                except Exception:  # noqa: BLE001
+                    logger.exception("group worker %s failed", slug)
+                    result = "не получилось — гляну ещё раз."
+                presence.clear_activity(slug)
+                out = (result or "").strip()[:3500] or "готово."
+                team_memory.append(project_dir, registry.label(slug), out)
+                await self.post_as(slug, chat.id, out)
 
-        # Lead wrap-up: the tech-lead summarizes the whole chain.
-        try:
-            summary = await arun_group_summary(text, [(s, r) for s, _, r in results])
-        except Exception:  # noqa: BLE001
-            logger.exception("group summary failed")
-            summary = ""
-        if summary:
-            await self.post_to_chat(chat.id, "✅ Итог тех-лида:\n" + summary[:3500])
+        await asyncio.gather(*[work(s, t) for s, t in workers], return_exceptions=True)
 
-        # Archive the shared board into the global wiki — long-term memory across
-        # projects (durable, no model cost).
+        # Archive the shared board into the global wiki — long-term cross-project
+        # memory (durable, no model cost).
         try:
             archive_project_to_wiki(project)
         except Exception:  # noqa: BLE001
